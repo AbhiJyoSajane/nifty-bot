@@ -1,3 +1,11 @@
+import os
+from kiteconnect import KiteConnect
+
+api_key = os.getenv("API_KEY")
+access_token = os.getenv("ACCESS_TOKEN")
+
+kite = KiteConnect(api_key=api_key)
+kite.set_access_token(access_token)
 from datetime import datetime, timedelta
 
 # ---------------- GLOBAL STATE ----------------
