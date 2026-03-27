@@ -3,6 +3,9 @@ import pandas as pd
 # Load data
 df = pd.read_csv("data.csv")
 
+print(df.head())
+print("Total rows:", len(df))
+
 df = df.dropna()
 
 # Clean columns
