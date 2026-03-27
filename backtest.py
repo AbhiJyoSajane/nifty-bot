@@ -3,6 +3,8 @@ import pandas as pd
 # Load data
 df = pd.read_csv("data.csv")
 
+df = df.dropna()
+
 # Clean columns
 df.columns = ["datetime","open","high","low","close","adj_close","volume"]
 df = df.dropna()
