@@ -1,65 +1,56 @@
 import pandas as pd
 
-# -------- LOAD REAL DATA --------
-url = "https://stooq.com/q/d/l/?s=%5Ensei&i=d"
-df = pd.read_csv(url)
+# Load your file (make sure name matches exactly)
+df = pd.read_csv("NIFTY 50.csv")
 
-# -------- CHECK COLUMNS --------
-print("Columns in data:", df.columns)
+# 🔍 Print columns to debug (important)
+print("Columns in file:", df.columns)
 
-# -------- FIX COLUMN NAMES SAFELY --------
-df.rename(columns={
-    "Date": "datetime",
-    "date": "datetime",
-    "DATE": "datetime",
-    "Open": "open",
-    "High": "high",
-    "Low": "low",
-    "Close": "close",
-    "Volume": "volume"
-}, inplace=True)
+# ✅ Fix column names (Kaggle file usually has these)
+df.columns = [col.strip().lower() for col in df.columns]
 
-# -------- ENSURE datetime EXISTS --------
-if "datetime" not in df.columns:
-    print("ERROR: datetime column not found")
-    exit()
+# Expected columns after this:
+# date, open, high, low, close
 
-# -------- CLEAN DATA --------
-df = df.dropna()
-df = df.sort_values(by="datetime")
+# Convert date column
+df['date'] = pd.to_datetime(df['date'])
 
-# -------- EMA --------
-df["ema9"] = df["close"].ewm(span=9).mean()
-df["ema21"] = df["close"].ewm(span=21).mean()
+# Sort properly
+df = df.sort_values('date')
 
-# -------- STRATEGY --------
-trades = []
-position = None
-entry_price = 0
+# Reset index
+df = df.reset_index(drop=True)
 
-for i in range(1, len(df)):
+# ===============================
+# SIMPLE STRATEGY (EMA crossover)
+# ===============================
 
-    # BUY
-    if df["ema9"].iloc[i] > df["ema21"].iloc[i] and df["ema9"].iloc[i-1] <= df["ema21"].iloc[i-1]:
-        position = "BUY"
-        entry_price = df["close"].iloc[i]
+df['ema20'] = df['close'].ewm(span=20).mean()
+df['ema50'] = df['close'].ewm(span=50).mean()
 
-    # SELL
-    elif df["ema9"].iloc[i] < df["ema21"].iloc[i] and df["ema9"].iloc[i-1] >= df["ema21"].iloc[i-1]:
-        if position == "BUY":
-            exit_price = df["close"].iloc[i]
-            profit = exit_price - entry_price
-            trades.append(profit)
-            position = None
+# Buy/Sell signal
+df['signal'] = 0
+df.loc[df['ema20'] > df['ema50'], 'signal'] = 1
+df.loc[df['ema20'] < df['ema50'], 'signal'] = -1
 
-# -------- RESULTS --------
-total_profit = sum(trades)
-total_trades = len(trades)
-wins = len([t for t in trades if t > 0])
+# Position (shifted signal)
+df['position'] = df['signal'].shift()
 
-win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+# Returns
+df['returns'] = df['close'].pct_change()
 
-print("Total Trades:", total_trades)
-print("Profit:", total_profit)
-print("Win Rate:", round(win_rate, 2), "%")
-print("Backtest completed")
+# Strategy returns
+df['strategy_returns'] = df['returns'] * df['position']
+
+# Cumulative P/L
+df['cum_returns'] = (1 + df['strategy_returns']).cumprod()
+
+# ===============================
+# OUTPUT
+# ===============================
+
+print("\nLast rows:\n")
+print(df.tail())
+
+print("\nFinal Strategy Return:")
+print(df['cum_returns'].iloc[-1])
