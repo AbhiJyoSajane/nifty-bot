@@ -7,7 +7,9 @@ import yfinance as yf
 df = yf.download("^NSEI", interval="5m", period="60d")
 
 df = df.reset_index()
-df.columns = [c.lower() for c in df.columns]
+
+# FIX: handle tuple columns (yfinance issue)
+df.columns = [c[0].lower() if isinstance(c, tuple) else c.lower() for c in df.columns]
 
 df = df.rename(columns={
     "datetime": "date",
