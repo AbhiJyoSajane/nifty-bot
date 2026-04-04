@@ -1,96 +1,101 @@
 import pandas as pd
 
-# Load data
+# === LOAD DATA ===
 df = pd.read_csv("data.csv")
 
-print(df.head())
-print("Total rows:", len(df))
+# Fix Yahoo format
+df.rename(columns={
+    "Date": "datetime",
+    "Open": "open",
+    "High": "high",
+    "Low": "low",
+    "Close": "close"
+}, inplace=True)
 
 df = df.dropna()
 
-# Clean columns
+# === EMA ===
+df["ema9"] = df["close"].ewm(span=9).mean()
+df["ema21"] = df["close"].ewm(span=21).mean()
 
-
-
-price_history = []
-
+# === VARIABLES ===
 trades = []
 position = None
 entry_price = 0
 
-def avg_range(data, n=5):
-    if len(data) < n:
-        return 0
-    return sum(d["high"] - d["low"] for d in data[-n:]) / n
+trades_today = 0
+total_loss = 0
+current_day = None
 
-def get_range(data, n=10):
-    highs = [d["high"] for d in data[-n:]]
-    lows = [d["low"] for d in data[-n:]]
-    return max(highs), min(lows)
+orb_high = None
+orb_low = None
 
-def is_sideways(data):
-    if len(data) < 10:
-        return False
-    r_high, r_low = get_range(data)
-    return (r_high - r_low) < avg_range(data, 5) * 3
+# === LOOP ===
+for i in range(len(df)):
+    row = df.iloc[i]
 
-for i, row in df.iterrows():
-    candle = {
-        "price": row["close"],
-        "high": row["high"],
-        "low": row["low"]
-    }
+    date = row["datetime"][:10]
 
-    price_history.append(candle)
+    # Reset daily
+    if current_day != date:
+        current_day = date
+        trades_today = 0
+        total_loss = 0
+        orb_high = None
+        orb_low = None
 
-    if len(price_history) < 10:
+    price = row["close"]
+
+    # ORB (first candle approx for daily data)
+    if orb_high is None:
+        orb_high = row["high"]
+        orb_low = row["low"]
         continue
 
-    price = candle["price"]
-
-    # Exit condition
-    if position == "BUY" and price < entry_price:
-        trades.append(price - entry_price)
-        position = None
-
-    elif position == "SELL" and price > entry_price:
-        trades.append(entry_price - price)
-        position = None
-
-    if position:
+    # Trade control
+    if trades_today >= 5 or total_loss <= -2000:
         continue
 
-    # Sideways
-    if is_sideways(price_history):
-        r_high, r_low = get_range(price_history)
+    # Trend
+    uptrend = row["ema9"] > row["ema21"]
+    downtrend = row["ema9"] < row["ema21"]
 
-        if price <= r_low:
+    # ENTRY
+    if position is None:
+        if price > orb_high and uptrend:
             position = "BUY"
             entry_price = price
+            trades_today += 1
 
-        elif price >= r_high:
+        elif price < orb_low and downtrend:
             position = "SELL"
             entry_price = price
+            trades_today += 1
 
-    else:
-        avg = avg_range(price_history)
+    # EXIT
+    if position == "BUY":
+        if price < entry_price - 20:
+            trades.append(price - entry_price)
+            total_loss += price - entry_price
+            position = None
+        elif price > entry_price + 40:
+            trades.append(price - entry_price)
+            position = None
 
-        if (candle["high"] - candle["low"]) > avg:
-            if price > candle["high"] - 0.2:
-                position = "BUY"
-                entry_price = price
+    elif position == "SELL":
+        if price > entry_price + 20:
+            trades.append(entry_price - price)
+            total_loss += entry_price - price
+            position = None
+        elif price < entry_price - 40:
+            trades.append(entry_price - price)
+            position = None
 
-            elif price < candle["low"] + 0.2:
-                position = "SELL"
-                entry_price = price
-
-# Results
+# === RESULTS ===
 total_profit = sum(trades)
 total_trades = len(trades)
 wins = len([t for t in trades if t > 0])
-losses = len([t for t in trades if t <= 0])
 
 print("Total Trades:", total_trades)
 print("Profit:", total_profit)
-print("Win Rate:", (wins/total_trades)*100 if total_trades else 0)
-print("Backtest completed")
+print("Win Rate:", (wins/total_trades)*100 if total_trades > 0 else 0)
