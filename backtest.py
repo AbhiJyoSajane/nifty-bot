@@ -1,101 +1,105 @@
 import pandas as pd
 
-# === LOAD DATA ===
+# ==============================
+# LOAD DATA
+# ==============================
 df = pd.read_csv("data.csv")
 
-# Fix Yahoo format
-df.rename(columns={
-    "Date": "datetime",
-    "Open": "open",
-    "High": "high",
-    "Low": "low",
-    "Close": "close"
-}, inplace=True)
+# Clean column names
+df.columns = [col.lower().replace(" ", "").replace("*", "") for col in df.columns]
 
+# Rename date column
+if "date" in df.columns:
+    df.rename(columns={"date": "datetime"}, inplace=True)
+
+# Drop missing values
 df = df.dropna()
 
-# === EMA ===
+print("Columns:", df.columns)
+print("Total rows:", len(df))
+
+# ==============================
+# EMA CALCULATION
+# ==============================
 df["ema9"] = df["close"].ewm(span=9).mean()
 df["ema21"] = df["close"].ewm(span=21).mean()
 
-# === VARIABLES ===
-trades = []
+# ==============================
+# VARIABLES
+# ==============================
 position = None
 entry_price = 0
+trades = []
+max_trades = 5
+daily_loss_limit = -2000
+current_day_loss = 0
+trade_count = 0
 
-trades_today = 0
-total_loss = 0
-current_day = None
+# ==============================
+# LOOP (BACKTEST)
+# ==============================
+for i in range(20, len(df)):
 
-orb_high = None
-orb_low = None
+    if trade_count >= max_trades:
+        break
 
-# === LOOP ===
-for i in range(len(df)):
     row = df.iloc[i]
-
-    date = row["datetime"][:10]
-
-    # Reset daily
-    if current_day != date:
-        current_day = date
-        trades_today = 0
-        total_loss = 0
-        orb_high = None
-        orb_low = None
-
     price = row["close"]
 
-    # ORB (first candle approx for daily data)
-    if orb_high is None:
-        orb_high = row["high"]
-        orb_low = row["low"]
-        continue
-
-    # Trade control
-    if trades_today >= 5 or total_loss <= -2000:
-        continue
-
-    # Trend
-    uptrend = row["ema9"] > row["ema21"]
-    downtrend = row["ema9"] < row["ema21"]
-
-    # ENTRY
+    # ===== ENTRY =====
     if position is None:
-        if price > orb_high and uptrend:
+
+        # BUY condition
+        if row["ema9"] > row["ema21"]:
             position = "BUY"
             entry_price = price
-            trades_today += 1
+            print("BUY at", price)
 
-        elif price < orb_low and downtrend:
+        # SELL condition
+        elif row["ema9"] < row["ema21"]:
             position = "SELL"
             entry_price = price
-            trades_today += 1
+            print("SELL at", price)
 
-    # EXIT
-    if position == "BUY":
-        if price < entry_price - 20:
-            trades.append(price - entry_price)
-            total_loss += price - entry_price
-            position = None
-        elif price > entry_price + 40:
-            trades.append(price - entry_price)
+    # ===== EXIT =====
+    elif position == "BUY":
+        profit = price - entry_price
+
+        if profit <= -20 or row["ema9"] < row["ema21"]:
+            trades.append(profit)
+            current_day_loss += profit
+            trade_count += 1
+            print("EXIT BUY:", profit)
             position = None
 
     elif position == "SELL":
-        if price > entry_price + 20:
-            trades.append(entry_price - price)
-            total_loss += entry_price - price
-            position = None
-        elif price < entry_price - 40:
-            trades.append(entry_price - price)
+        profit = entry_price - price
+
+        if profit <= -20 or row["ema9"] > row["ema21"]:
+            trades.append(profit)
+            current_day_loss += profit
+            trade_count += 1
+            print("EXIT SELL:", profit)
             position = None
 
-# === RESULTS ===
+    # ===== STOP DAY LOSS =====
+    if current_day_loss <= daily_loss_limit:
+        print("Daily loss limit hit")
+        break
+
+# ==============================
+# RESULTS
+# ==============================
 total_profit = sum(trades)
 total_trades = len(trades)
 wins = len([t for t in trades if t > 0])
 
 print("Total Trades:", total_trades)
 print("Profit:", total_profit)
-print("Win Rate:", (wins/total_trades)*100 if total_trades > 0 else 0)
+
+if total_trades > 0:
+    print("Win Rate:", (wins / total_trades) * 100)
+else:
+    print("Win Rate: 0")
+
+print("Backtest completed")
