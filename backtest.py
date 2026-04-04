@@ -1,39 +1,35 @@
 import pandas as pd
 
-# Load your file (make sure name matches exactly)
+# ===============================
+# LOAD DATA
+# ===============================
+
 df = pd.read_csv("NIFTY 50.csv")
 
-# 🔍 Print columns to debug (important)
-print("Columns in file:", df.columns)
-
-# ✅ Fix column names (Kaggle file usually has these)
+# Clean column names
 df.columns = [col.strip().lower() for col in df.columns]
 
-# Expected columns after this:
-# date, open, high, low, close
+print("Columns in file:", df.columns)
 
-# Convert date column
+# Convert date
 df['date'] = pd.to_datetime(df['date'])
 
-# Sort properly
-df = df.sort_values('date')
-
-# Reset index
-df = df.reset_index(drop=True)
+# Sort data
+df = df.sort_values('date').reset_index(drop=True)
 
 # ===============================
-# SIMPLE STRATEGY (EMA crossover)
+# STRATEGY (EMA Crossover)
 # ===============================
 
 df['ema20'] = df['close'].ewm(span=20).mean()
 df['ema50'] = df['close'].ewm(span=50).mean()
 
-# Buy/Sell signal
+# Signal: 1 = Buy, -1 = Sell
 df['signal'] = 0
 df.loc[df['ema20'] > df['ema50'], 'signal'] = 1
 df.loc[df['ema20'] < df['ema50'], 'signal'] = -1
 
-# Position (shifted signal)
+# Position (shift signal)
 df['position'] = df['signal'].shift()
 
 # Returns
@@ -42,15 +38,15 @@ df['returns'] = df['close'].pct_change()
 # Strategy returns
 df['strategy_returns'] = df['returns'] * df['position']
 
-# Cumulative P/L
+# Cumulative returns
 df['cum_returns'] = (1 + df['strategy_returns']).cumprod()
 
 # ===============================
 # OUTPUT
 # ===============================
 
-print("\nLast rows:\n")
-print(df.tail())
+print("\n==== LAST 5 ROWS ====\n")
+print(df[['date','close','ema20','ema50','signal','cum_returns']].tail())
 
-print("\nFinal Strategy Return:")
-print(df['cum_returns'].iloc[-1])
+print("\n==== FINAL RESULT ====\n")
+print("Final Return:", df['cum_returns'].iloc[-1])
