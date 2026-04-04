@@ -8,7 +8,7 @@ df = yf.download("^NSEI", interval="5m", period="60d")
 
 df = df.reset_index()
 
-# FIX: handle tuple columns (yfinance issue)
+# FIX: handle tuple columns
 df.columns = [c[0].lower() if isinstance(c, tuple) else c.lower() for c in df.columns]
 
 df = df.rename(columns={
@@ -85,20 +85,20 @@ for i in range(1, len(df)):
         continue
 
     # ===============================
-    # ORB STRATEGY (9:30–10:00)
+    # ORB STRATEGY (RELAXED)
     # ===============================
     if pd.to_datetime("09:30").time() <= time <= pd.to_datetime("10:00").time():
 
         if position is None:
 
-            # BUY breakout
-            if row['close'] > first_15_high and row['ema9'] > row['ema21']:
+            # BUY breakout (NO EMA FILTER)
+            if row['close'] > first_15_high:
                 position = "BUY"
                 entry_price = row['close']
                 trade_count += 1
 
-            # SELL breakout
-            elif row['close'] < first_15_low and row['ema9'] < row['ema21']:
+            # SELL breakout (NO EMA FILTER)
+            elif row['close'] < first_15_low:
                 position = "SELL"
                 entry_price = row['close']
                 trade_count += 1
