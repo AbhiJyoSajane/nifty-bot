@@ -1,152 +1,41 @@
+from kiteconnect import KiteConnect
 from datetime import datetime, timedelta
 
-# ---------------- GLOBAL STATE ----------------
-price_history = []
+# 🔑 Your credentials
+API_KEY = "btj1h6qbwop4gah2"
+ACCESS_TOKEN = "6Usfkw0Q3rKm18F1uIX5Q6VTtKZvdHEO"
 
-trades_today = 0
-morning_trades = 0
-afternoon_trades = 0
+# 🔌 Connect
+kite = KiteConnect(api_key=API_KEY)
+kite.set_access_token(ACCESS_TOKEN)
 
-last_trade_time = None
+print("✅ Connected for strategy")
 
-# ---------------- MOCK DATA (TEMP - will replace with Kite) ----------------
-def get_market_data():
-    return {
-        "price": 100,
-        "high": 102,
-        "low": 98,
-        "volume": 1500
-    }
+# 📅 Get last 30 days data (5 min)
+to_date = datetime.now()
+from_date = to_date - timedelta(days=30)
 
-def place_order(action):
-    print(f"{datetime.now()} -> ORDER: {action}")
+data = kite.historical_data(
+    instrument_token=256265,  # NIFTY 50
+    from_date=from_date,
+    to_date=to_date,
+    interval="5minute"
+)
 
-# ---------------- HELPERS ----------------
-def avg_range(n=5):
-    if len(price_history) < n:
-        return 0
-    return sum(c["high"] - c["low"] for c in price_history[-n:]) / n
+print("Candles fetched:", len(data))
 
-def get_range_high_low(n=10):
-    highs = [c["high"] for c in price_history[-n:]]
-    lows = [c["low"] for c in price_history[-n:]]
-    return max(highs), min(lows)
+# 🧠 Simple strategy (sample)
+# Buy if close > open, Sell if close < open
 
-def get_swing_low():
-    return min(c["low"] for c in price_history[-3:])
+profit = 0
 
-def get_swing_high():
-    return max(c["high"] for c in price_history[-3:])
+for candle in data:
+    open_price = candle["open"]
+    close_price = candle["close"]
 
-def is_sideways():
-    if len(price_history) < 10:
-        return False
-    r_high, r_low = get_range_high_low()
-    return (r_high - r_low) < avg_range(5) * 3
+    if close_price > open_price:
+        profit += (close_price - open_price)
+    else:
+        profit += (open_price - close_price)
 
-# ---------------- SESSION ----------------
-def get_session():
-    now = datetime.now().time()
-
-    m_start = datetime.strptime("09:30", "%H:%M").time()
-    m_end = datetime.strptime("11:30", "%H:%M").time()
-
-    a_start = datetime.strptime("14:00", "%H:%M").time()
-    a_end = datetime.strptime("15:15", "%H:%M").time()
-
-    if m_start <= now <= m_end:
-        return "MORNING"
-    elif a_start <= now <= a_end:
-        return "AFTERNOON"
-    return None
-
-# ---------------- TRADE CONTROL ----------------
-def can_trade():
-    global trades_today, morning_trades, afternoon_trades, last_trade_time
-
-    if trades_today >= 3:
-        return False
-
-    session = get_session()
-    if not session:
-        return False
-
-    # 5 min cooldown
-    if last_trade_time:
-        if datetime.now() - last_trade_time < timedelta(minutes=5):
-            return False
-
-    if session == "MORNING":
-        return morning_trades < 2
-
-    if session == "AFTERNOON":
-        if morning_trades == 0:
-            return afternoon_trades < 3
-        elif morning_trades == 1:
-            return afternoon_trades < 2
-        else:
-            return afternoon_trades < 1
-
-    return False
-
-def record_trade():
-    global trades_today, morning_trades, afternoon_trades, last_trade_time
-
-    trades_today += 1
-    last_trade_time = datetime.now()
-
-    session = get_session()
-    if session == "MORNING":
-        morning_trades += 1
-    elif session == "AFTERNOON":
-        afternoon_trades += 1
-
-# ---------------- STRATEGY ----------------
-def run_strategy():
-    data = get_market_data()
-    price_history.append(data)
-
-    if len(price_history) < 10:
-        return
-
-    if not can_trade():
-        return
-
-    price = data["price"]
-    high = data["high"]
-    low = data["low"]
-
-    # -------- SIDEWAYS --------
-    if is_sideways():
-        r_high, r_low = get_range_high_low()
-
-        if price <= r_low + 0.2:
-            place_order("BUY")
-            record_trade()
-
-        elif price >= r_high - 0.2:
-            place_order("SELL")
-            record_trade()
-
-        return
-
-    # -------- TRENDING --------
-    if (high - low) > avg_range():
-
-        if price > high - 0.2:
-            place_order("BUY")
-            record_trade()
-
-        elif price < low + 0.2:
-            place_order("SELL")
-            record_trade()
-
-    recent_high, recent_low = get_range_high_low(5)
-
-    if price > recent_high:
-        place_order("BUY")
-        record_trade()
-
-    elif price < recent_low:
-        place_order("SELL")
-        record_trade()
+print("📊 Total Points Profit:", round(profit, 2))
