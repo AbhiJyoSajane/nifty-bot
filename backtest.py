@@ -8,8 +8,9 @@ SYMBOL = "^NSEI"
 MAX_TRADES_PER_DAY = 5
 MAX_DAILY_LOSS = -2000
 
+
 # ==============================
-# FETCH DATA (5 MIN FROM INTERNET)
+# FETCH DATA (SAFE + STABLE)
 # ==============================
 def get_data():
     df = yf.download(
@@ -24,16 +25,20 @@ def get_data():
 
     df.reset_index(inplace=True)
 
-    df.rename(columns={
-        "Datetime": "datetime",
-        "Open": "open",
-        "High": "high",
-        "Low": "low",
-        "Close": "close"
-    }, inplace=True)
+    # Standardize column names
+    df.columns = [col.lower() for col in df.columns]
 
-    # IMPORTANT FIX
-    df['datetime'] = pd.to_datetime(df['datetime'])
+    # Rename datetime properly
+    if 'datetime' not in df.columns:
+        if 'index' in df.columns:
+            df.rename(columns={'index': 'datetime'}, inplace=True)
+        elif 'date' in df.columns:
+            df.rename(columns={'date': 'datetime'}, inplace=True)
+
+    # FINAL SAFETY FIX (prevents all datetime errors)
+    df = df.copy()
+    df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
+    df = df.dropna(subset=['datetime'])
 
     return df
 
@@ -70,7 +75,11 @@ def run_strategy(df):
 
     for i, row in df.iterrows():
 
-        dt = row['datetime']
+        # 🔥 FINAL SAFE datetime handling
+        dt = pd.to_datetime(row['datetime'], errors='coerce')
+        if pd.isna(dt):
+            continue
+
         day = dt.date()
 
         # ==============================
@@ -97,8 +106,8 @@ def run_strategy(df):
                 prev_day_high = prev_day_df['high'].max()
                 prev_day_low = prev_day_df['low'].min()
 
-            # Weekly levels (last 5 days)
-            last_5_days = df[df['datetime'] < dt].tail(375)  # approx 5 days * 75 candles
+            # Weekly levels (approx last 5 days)
+            last_5_days = df[df['datetime'] < dt].tail(375)
             if not last_5_days.empty:
                 week_high = last_5_days['high'].max()
                 week_low = last_5_days['low'].min()
@@ -119,7 +128,7 @@ def run_strategy(df):
         # ==============================
         if position is None:
 
-            # ORB breakout + EMA trend
+            # ORB breakout + EMA filter
             if orb_high and price > orb_high and row['ema20'] > row['ema50']:
                 position = "LONG"
                 entry_price = price
@@ -154,14 +163,11 @@ def run_strategy(df):
 
             if position == "LONG":
                 pnl = price - entry_price
-
-                # exit conditions
                 if price < row['ema20'] or (prev_day_low and price < prev_day_low):
                     position = None
 
             elif position == "SHORT":
                 pnl = entry_price - price
-
                 if price > row['ema20'] or (prev_day_high and price > prev_day_high):
                     position = None
 
