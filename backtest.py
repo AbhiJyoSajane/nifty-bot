@@ -1,172 +1,153 @@
+import yfinance as yf
 import pandas as pd
-import requests
-from io import StringIO
-from datetime import datetime, timedelta
 
-# ===============================
-# FETCH FREE DATA (NSE VIA STITCHED SOURCE)
-# ===============================
+# ==============================
+# FETCH DATA
+# ==============================
 def get_data():
-    url = "https://stooq.com/q/d/l/?s=nifty&i=5"
+    df = yf.download("^NSEI", interval="5m", period="60d")
+    df.reset_index(inplace=True)
+    df.rename(columns={
+        "Datetime": "datetime",
+        "Open": "open",
+        "High": "high",
+        "Low": "low",
+        "Close": "close",
+        "Volume": "volume"
+    }, inplace=True)
 
-    response = requests.get(url)
-    df = pd.read_csv(StringIO(response.text))
+    df['datetime'] = pd.to_datetime(df['datetime'])
+    df['date'] = df['datetime'].dt.date
+    return df
 
-    df.columns = [c.lower() for c in df.columns]
-    df['datetime'] = pd.to_datetime(df['date'] + ' ' + df['time'])
-    df.set_index('datetime', inplace=True)
 
-    # last 3 months
-    df = df[df.index > (datetime.now() - timedelta(days=90))]
+# ==============================
+# ADD INDICATORS
+# ==============================
+def add_indicators(df):
+    df['ema9'] = df['close'].ewm(span=9).mean()
+    df['ema21'] = df['close'].ewm(span=21).mean()
+
+    # Yesterday High Low
+    df['y_high'] = df.groupby('date')['high'].transform('max').shift(1)
+    df['y_low'] = df.groupby('date')['low'].transform('min').shift(1)
+
+    # Weekly High Low
+    df['week'] = df['datetime'].dt.isocalendar().week
+    df['w_high'] = df.groupby('week')['high'].transform('max')
+    df['w_low'] = df.groupby('week')['low'].transform('min')
 
     return df
 
-df = get_data()
 
-# ===============================
-# EMA
-# ===============================
-df['ema9'] = df['close'].ewm(span=9).mean()
-df['ema21'] = df['close'].ewm(span=21).mean()
+# ==============================
+# BACKTEST LOGIC
+# ==============================
+def backtest(df):
+    trades = 0
+    wins = 0
+    losses = 0
+    total_profit = 0
 
-# ===============================
-# DAILY + WEEKLY LEVELS
-# ===============================
-df['date'] = df.index.date
+    current_day = None
+    day_loss = 0
+    trade_count = 0
 
-daily = df.groupby('date').agg({'high': 'max', 'low': 'min'}).shift(1)
-df = df.merge(daily, left_on='date', right_index=True, suffixes=('', '_yday'))
+    orb_high = 0
+    orb_low = 0
 
-df['week'] = pd.to_datetime(df.index).isocalendar().week
-weekly = df.groupby('week').agg({'high': 'max', 'low': 'min'}).shift(1)
-df = df.merge(weekly, left_on='week', right_index=True, suffixes=('', '_week'))
+    for i in range(1, len(df)):
 
-# ===============================
-# BACKTEST
-# ===============================
-position = None
-entry = 0
-sl = 0
-target = 0
+        row = df.iloc[i]
+        prev = df.iloc[i-1]
 
-total_profit = 0
-trades = 0
-wins = 0
-losses = 0
+        # New day reset
+        if current_day != row['date']:
+            current_day = row['date']
+            day_loss = 0
+            trade_count = 0
 
-current_day = None
-daily_loss = 0
-daily_trades = 0
+            # ORB calculation (first 15 min)
+            day_data = df[df['date'] == current_day].head(3)
+            if len(day_data) >= 3:
+                orb_high = day_data['high'].max()
+                orb_low = day_data['low'].min()
 
-orb_high = None
-orb_low = None
+        # Stop trading if limits hit
+        if trade_count >= 5 or day_loss <= -2000:
+            continue
 
-for i in range(1, len(df)):
-    row = df.iloc[i]
-    prev = df.iloc[i-1]
+        price = row['close']
 
-    day = row['date']
+        # ======================
+        # ENTRY CONDITIONS
+        # ======================
 
-    # Reset daily
-    if day != current_day:
-        current_day = day
-        daily_loss = 0
-        daily_trades = 0
-        orb_high = None
-        orb_low = None
-
-    if daily_loss <= -2000 or daily_trades >= 5:
-        continue
-
-    time = row.name.time()
-
-    # ORB (first 15 min)
-    if time <= datetime.strptime("09:30", "%H:%M").time():
-        orb_high = max(orb_high or row['high'], row['high'])
-        orb_low = min(orb_low or row['low'], row['low'])
-        continue
-
-    # ENTRY
-    if position is None and orb_high is not None:
-
-        # BUY
-        if (
-            row['close'] > orb_high and
+        buy_signal = (
+            price > orb_high and
             row['ema9'] > row['ema21'] and
-            row['close'] > row['high_yday'] and
-            row['close'] > row['high_week']
-        ):
-            position = "BUY"
-            entry = row['close']
-            sl = orb_low
-            target = entry + (entry - sl)
-            trades += 1
-            daily_trades += 1
+            price > row['y_high']
+        )
 
-        # SELL
-        elif (
-            row['close'] < orb_low and
+        sell_signal = (
+            price < orb_low and
             row['ema9'] < row['ema21'] and
-            row['close'] < row['low_yday'] and
-            row['close'] < row['low_week']
-        ):
-            position = "SELL"
-            entry = row['close']
-            sl = orb_high
-            target = entry - (sl - entry)
-            trades += 1
-            daily_trades += 1
+            price < row['y_low']
+        )
 
-        # BACKUP EMA CROSS
-        elif prev['ema9'] < prev['ema21'] and row['ema9'] > row['ema21']:
-            position = "BUY"
-            entry = row['close']
-            sl = row['low']
-            target = entry + (entry - sl)
-            trades += 1
-            daily_trades += 1
+        # Backup EMA crossover
+        ema_buy = prev['ema9'] < prev['ema21'] and row['ema9'] > row['ema21']
+        ema_sell = prev['ema9'] > prev['ema21'] and row['ema9'] < row['ema21']
 
-        elif prev['ema9'] > prev['ema21'] and row['ema9'] < row['ema21']:
-            position = "SELL"
-            entry = row['close']
-            sl = row['high']
-            target = entry - (sl - entry)
-            trades += 1
-            daily_trades += 1
+        # ======================
+        # EXECUTION
+        # ======================
 
-    # EXIT
-    if position == "BUY":
-        if row['low'] <= sl:
-            pnl = sl - entry
-            losses += 1
-            daily_loss += pnl
-            position = None
-        elif row['high'] >= target:
-            pnl = target - entry
+        if buy_signal or ema_buy:
+            entry = price
+            sl = entry - 20
+            target = entry + 40
+
+        elif sell_signal or ema_sell:
+            entry = price
+            sl = entry + 20
+            target = entry - 40
+
+        else:
+            continue
+
+        # Simulate next candle exit
+        next_row = df.iloc[i+1] if i+1 < len(df) else row
+
+        exit_price = next_row['close']
+        profit = exit_price - entry if entry < exit_price else entry - exit_price
+
+        # Track stats
+        trades += 1
+        trade_count += 1
+
+        if profit > 0:
             wins += 1
-            position = None
-        total_profit += pnl
-
-    elif position == "SELL":
-        if row['high'] >= sl:
-            pnl = entry - sl
+        else:
             losses += 1
-            daily_loss += pnl
-            position = None
-        elif row['low'] <= target:
-            pnl = entry - target
-            wins += 1
-            position = None
-        total_profit += pnl
+            day_loss += profit
 
-# ===============================
-# RESULT
-# ===============================
-win_rate = (wins / trades * 100) if trades else 0
+        total_profit += profit
 
-print("\n===== FINAL RESULT =====")
-print("Total Trades:", trades)
-print("Winning Trades:", wins)
-print("Losing Trades:", losses)
-print("Win Rate:", round(win_rate, 2), "%")
-print("Total Profit:", round(total_profit, 2))
+    # ======================
+    # FINAL RESULT
+    # ======================
+    print("===== FINAL RESULT =====")
+    print(f"Total Trades: {trades}")
+    print(f"Winning Trades: {wins}")
+    print(f"Losing Trades: {losses}")
+    print(f"Win Rate: {round((wins/trades)*100,2) if trades else 0} %")
+    print(f"Total Profit: {round(total_profit,2)}")
+
+
+# ==============================
+# RUN
+# ==============================
+df = get_data()
+df = add_indicators(df)
+backtest(df)
