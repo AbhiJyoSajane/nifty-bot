@@ -1,6 +1,5 @@
 import yfinance as yf
 import pandas as pd
-import numpy as np
 
 # ================= SETTINGS =================
 SYMBOL = "^NSEI"
@@ -13,24 +12,32 @@ LOT_SIZE = 50
 
 # ================= FETCH DATA =================
 def get_data():
-    df = yf.download(SYMBOL, interval=INTERVAL, period=PERIOD, auto_adjust=True)
+    df = yf.download(SYMBOL, interval=INTERVAL, period=PERIOD, auto_adjust=True, progress=False)
 
-    # Fix index / datetime issues
-    if isinstance(df.index, pd.DatetimeIndex):
-        df = df.reset_index()
+    # If empty → fail early
+    if df is None or df.empty:
+        raise Exception("No data fetched from Yahoo")
+
+    # Flatten multi-index columns if present
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    # Reset index to get datetime
+    df = df.reset_index()
 
     # Normalize column names
-    df.columns = [str(col).lower() for col in df.columns]
+    df.columns = [str(col).strip().lower() for col in df.columns]
+
+    # Debug print (will show in Railway logs)
+    print("COLUMNS:", df.columns)
 
     # Handle datetime safely
     if 'datetime' in df.columns:
         df['datetime'] = pd.to_datetime(df['datetime'])
     elif 'date' in df.columns:
         df['datetime'] = pd.to_datetime(df['date'])
-    elif 'index' in df.columns:
-        df['datetime'] = pd.to_datetime(df['index'])
     else:
-        raise Exception("No datetime column found")
+        raise Exception(f"No datetime column found. Columns are: {df.columns}")
 
     df.set_index('datetime', inplace=True)
 
@@ -51,9 +58,6 @@ def apply_strategy(df):
 
     grouped = df.groupby('date')
 
-    prev_day_high = None
-    prev_day_low = None
-
     for date, day in grouped:
 
         day = day.copy()
@@ -61,12 +65,6 @@ def apply_strategy(df):
         daily_pnl[date] = 0
         trade_count[date] = 0
 
-        # Weekly levels
-        week_data = df[df.index.date <= date].last('5D')
-        week_high = week_data['high'].max()
-        week_low = week_data['low'].min()
-
-        # ORB (first 15 min)
         if len(day) < 5:
             continue
 
@@ -86,10 +84,9 @@ def apply_strategy(df):
             if daily_pnl[date] <= MAX_DAILY_LOSS:
                 break
 
-            # ===== ENTRY =====
+            # ENTRY
             if position is None:
 
-                # ORB breakout + EMA
                 if row['close'] > orb_high and row['ema9'] > row['ema21']:
                     position = 'LONG'
                     entry_price = row['close']
@@ -100,7 +97,6 @@ def apply_strategy(df):
                     entry_price = row['close']
                     trade_count[date] += 1
 
-                # EMA backup
                 elif row['ema9'] > row['ema21']:
                     position = 'LONG'
                     entry_price = row['close']
@@ -111,9 +107,8 @@ def apply_strategy(df):
                     entry_price = row['close']
                     trade_count[date] += 1
 
-            # ===== EXIT =====
+            # EXIT
             elif position == 'LONG':
-
                 if row['ema9'] < row['ema21']:
                     pnl = (row['close'] - entry_price) * LOT_SIZE
                     daily_pnl[date] += pnl
@@ -121,16 +116,11 @@ def apply_strategy(df):
                     position = None
 
             elif position == 'SHORT':
-
                 if row['ema9'] > row['ema21']:
                     pnl = (entry_price - row['close']) * LOT_SIZE
                     daily_pnl[date] += pnl
                     trades.append(pnl)
                     position = None
-
-        # Store previous day levels
-        prev_day_high = day['high'].max()
-        prev_day_low = day['low'].min()
 
     return trades
 
