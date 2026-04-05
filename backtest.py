@@ -2,18 +2,18 @@ import yfinance as yf
 import pandas as pd
 
 # =========================
-# FETCH DATA
+# FETCH DATA (30 DAYS)
 # =========================
 def get_data():
-    df = yf.download("^NSEI", interval="5m", period="5d")
+    df = yf.download("^NSEI", interval="5m", period="30d")
 
     df.reset_index(inplace=True)
 
-    # FIX: handle tuple columns
+    # Fix tuple columns issue
     df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
     df.columns = [col.lower() for col in df.columns]
 
-    # Ensure datetime exists
+    # Ensure datetime column
     if 'datetime' not in df.columns:
         df.rename(columns={'date': 'datetime'}, inplace=True)
 
@@ -23,7 +23,7 @@ def get_data():
 
 
 # =========================
-# STRATEGY
+# STRATEGY (IMPROVED)
 # =========================
 def run_strategy(df):
 
@@ -35,47 +35,43 @@ def run_strategy(df):
     position = None
     entry_price = 0
 
+    TARGET = 60
+    SL = 20
+
     for i in range(1, len(df)):
 
         row = df.iloc[i]
-        prev = df.iloc[i-1]
 
-        # BUY
-        if (
-            prev['ema9'] < prev['ema21'] and
-            row['ema9'] > row['ema21'] and
-            row['close'] > row['ema200']
-        ):
+        # BUY (relaxed condition)
+        if row['ema9'] > row['ema21'] and row['close'] > row['ema200']:
             position = "BUY"
             entry_price = row['close']
 
-        # SELL
-        elif (
-            prev['ema9'] > prev['ema21'] and
-            row['ema9'] < row['ema21'] and
-            row['close'] < row['ema200']
-        ):
+        # SELL (relaxed condition)
+        elif row['ema9'] < row['ema21'] and row['close'] < row['ema200']:
             position = "SELL"
             entry_price = row['close']
 
-        # EXIT
+        # EXIT LOGIC
         if position == "BUY":
-            if row['close'] >= entry_price + 40:
-                trades.append(40)
+            if row['close'] >= entry_price + TARGET:
+                trades.append(TARGET)
                 position = None
-            elif row['close'] <= entry_price - 20:
-                trades.append(-20)
+            elif row['close'] <= entry_price - SL:
+                trades.append(-SL)
                 position = None
 
         elif position == "SELL":
-            if row['close'] <= entry_price - 40:
-                trades.append(40)
+            if row['close'] <= entry_price - TARGET:
+                trades.append(TARGET)
                 position = None
-            elif row['close'] >= entry_price + 20:
-                trades.append(-20)
+            elif row['close'] >= entry_price + SL:
+                trades.append(-SL)
                 position = None
 
+    # =========================
     # RESULT
+    # =========================
     total_trades = len(trades)
     wins = len([t for t in trades if t > 0])
     losses = len([t for t in trades if t < 0])
