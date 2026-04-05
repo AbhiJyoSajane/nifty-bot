@@ -5,17 +5,17 @@ from datetime import datetime, timedelta
 API_KEY = "btj1h6qbwop4gah2"
 ACCESS_TOKEN = "6Usfkw0Q3rKm18F1uIX5Q6VTtKZvdHEO"
 
-# 🔌 Connect (ONLY this, no generate_session)
+# 🔌 Connect (NO generate_session here)
 kite = KiteConnect(api_key=API_KEY)
 kite.set_access_token(ACCESS_TOKEN)
 
 print("✅ Connected for strategy")
 
-# 📅 Get last 30 days data (5 min)
+# 📅 Get last 30 days data
 to_date = datetime.now()
 from_date = to_date - timedelta(days=30)
 
-# NIFTY 50 instrument token
+# 📊 NIFTY 50 token
 instrument_token = 256265
 
 data = kite.historical_data(
@@ -34,7 +34,6 @@ for candle in data:
     open_price = candle["open"]
     close_price = candle["close"]
 
-    # simple logic
     if close_price > open_price:
         profit += (close_price - open_price)
     else:
