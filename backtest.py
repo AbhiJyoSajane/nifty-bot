@@ -9,31 +9,37 @@ PERIOD = "60d"
 
 MAX_TRADES = 5
 MAX_DAILY_LOSS = -2000
-LOT_SIZE = 50   # adjust if needed
+LOT_SIZE = 50
 
 # ================= FETCH DATA =================
 def get_data():
     df = yf.download(SYMBOL, interval=INTERVAL, period=PERIOD, auto_adjust=True)
 
-    df.reset_index(inplace=True)
+    # Fix index / datetime issues
+    if isinstance(df.index, pd.DatetimeIndex):
+        df = df.reset_index()
 
-    # Fix column naming
+    # Normalize column names
     df.columns = [str(col).lower() for col in df.columns]
 
-    # Ensure datetime exists
-    if 'datetime' not in df.columns:
-        if 'index' in df.columns:
-            df.rename(columns={'index': 'datetime'}, inplace=True)
+    # Handle datetime safely
+    if 'datetime' in df.columns:
+        df['datetime'] = pd.to_datetime(df['datetime'])
+    elif 'date' in df.columns:
+        df['datetime'] = pd.to_datetime(df['date'])
+    elif 'index' in df.columns:
+        df['datetime'] = pd.to_datetime(df['index'])
+    else:
+        raise Exception("No datetime column found")
 
-    df['datetime'] = pd.to_datetime(df['datetime'])
     df.set_index('datetime', inplace=True)
 
     return df
 
+
 # ================= STRATEGY =================
 def apply_strategy(df):
 
-    # EMA
     df['ema9'] = df['close'].ewm(span=9).mean()
     df['ema21'] = df['close'].ewm(span=21).mean()
 
@@ -55,12 +61,15 @@ def apply_strategy(df):
         daily_pnl[date] = 0
         trade_count[date] = 0
 
-        # Weekly high/low
+        # Weekly levels
         week_data = df[df.index.date <= date].last('5D')
         week_high = week_data['high'].max()
         week_low = week_data['low'].min()
 
-        # ORB (first 15 min = 3 candles)
+        # ORB (first 15 min)
+        if len(day) < 5:
+            continue
+
         orb_high = day.iloc[:3]['high'].max()
         orb_low = day.iloc[:3]['low'].min()
 
@@ -80,7 +89,7 @@ def apply_strategy(df):
             # ===== ENTRY =====
             if position is None:
 
-                # ORB breakout + EMA filter
+                # ORB breakout + EMA
                 if row['close'] > orb_high and row['ema9'] > row['ema21']:
                     position = 'LONG'
                     entry_price = row['close']
@@ -91,7 +100,7 @@ def apply_strategy(df):
                     entry_price = row['close']
                     trade_count[date] += 1
 
-                # EMA crossover backup
+                # EMA backup
                 elif row['ema9'] > row['ema21']:
                     position = 'LONG'
                     entry_price = row['close']
@@ -108,7 +117,6 @@ def apply_strategy(df):
                 if row['ema9'] < row['ema21']:
                     pnl = (row['close'] - entry_price) * LOT_SIZE
                     daily_pnl[date] += pnl
-
                     trades.append(pnl)
                     position = None
 
@@ -117,21 +125,21 @@ def apply_strategy(df):
                 if row['ema9'] > row['ema21']:
                     pnl = (entry_price - row['close']) * LOT_SIZE
                     daily_pnl[date] += pnl
-
                     trades.append(pnl)
                     position = None
 
-        # store prev day levels
+        # Store previous day levels
         prev_day_high = day['high'].max()
         prev_day_low = day['low'].min()
 
     return trades
 
+
 # ================= RUN =================
 df = get_data()
 trades = apply_strategy(df)
 
-# ================= RESULTS =================
+# ================= RESULT =================
 total_trades = len(trades)
 winning = len([t for t in trades if t > 0])
 losing = len([t for t in trades if t < 0])
@@ -141,5 +149,5 @@ print("\n===== FINAL RESULT =====")
 print("Total Trades:", total_trades)
 print("Winning Trades:", winning)
 print("Losing Trades:", losing)
-print("Win Rate:", (winning/total_trades*100) if total_trades > 0 else 0, "%")
+print("Win Rate:", (winning / total_trades * 100) if total_trades > 0 else 0, "%")
 print("Total Profit:", total_profit)
