@@ -1,2 +1,4 @@
+kiteconnect
 pandas
-yfinance
+numpy
+python-dateutil
