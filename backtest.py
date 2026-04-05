@@ -1,114 +1,138 @@
-def apply_strategy(df):
+import pandas as pd
+import yfinance as yf
+from datetime import datetime, timedelta
+
+# ==============================
+# SETTINGS
+# ==============================
+SYMBOL = "^NSEI"
+INTERVAL = "5m"
+DAYS = 5
+
+MAX_DAILY_LOSS = 2000
+MAX_TRADES = 5
+
+# ==============================
+# FETCH DATA FROM INTERNET
+# ==============================
+def get_data():
+    df = yf.download(
+        SYMBOL,
+        interval=INTERVAL,
+        period=f"{DAYS}d",
+        progress=False
+    )
+
+    if df.empty:
+        raise Exception("No data fetched")
+
+    df.reset_index(inplace=True)
+
+    # Standard column naming
+    df.rename(columns={
+        "Datetime": "datetime",
+        "Open": "open",
+        "High": "high",
+        "Low": "low",
+        "Close": "close"
+    }, inplace=True)
+
+    return df
+
+# ==============================
+# STRATEGY
+# ==============================
+def run_strategy(df):
 
     df['ema9'] = df['close'].ewm(span=9).mean()
     df['ema21'] = df['close'].ewm(span=21).mean()
 
-    df['date'] = df.index.date
+    total_profit = 0
+    trades = 0
+    wins = 0
+    losses = 0
 
-    # Yesterday High/Low
-    daily = df.resample('1D').agg({'high':'max','low':'min'})
-    daily['prev_high'] = daily['high'].shift(1)
-    daily['prev_low'] = daily['low'].shift(1)
+    current_day = None
+    day_loss = 0
 
-    # Weekly High/Low
-    weekly = df.resample('1W').agg({'high':'max','low':'min'})
-    weekly['week_high'] = weekly['high'].shift(1)
-    weekly['week_low'] = weekly['low'].shift(1)
+    for i in range(30, len(df)):
 
-    trades = []
+        row = df.iloc[i]
+        prev = df.iloc[i-1]
 
-    grouped = df.groupby('date')
+        day = row['datetime'].date()
 
-    for date, day in grouped:
+        # Reset daily
+        if current_day != day:
+            current_day = day
+            day_loss = 0
+            trades = 0
 
-        day = day.copy()
-
-        if len(day) < 5:
+        # Stop trading if limits hit
+        if day_loss <= -MAX_DAILY_LOSS or trades >= MAX_TRADES:
             continue
 
-        daily_pnl = 0
-        trades_today = 0
+        price = row['close']
 
-        # ORB
-        orb_high = day.iloc[:3]['high'].max()
-        orb_low = day.iloc[:3]['low'].min()
-
-        # Get filters
-        try:
-            y_high = daily.loc[str(date)]['prev_high']
-            y_low = daily.loc[str(date)]['prev_low']
-            w_high = weekly.loc[:str(date)].iloc[-1]['week_high']
-            w_low = weekly.loc[:str(date)].iloc[-1]['week_low']
-        except:
+        # ORB (first 15 min = first 3 candles)
+        if i < 3:
             continue
 
-        position = None
-        entry = sl = target = 0
+        orb_high = df.iloc[i-3:i]['high'].max()
+        orb_low = df.iloc[i-3:i]['low'].min()
 
-        for i in range(3, len(day)):
+        # ==============================
+        # BUY CONDITION
+        # ==============================
+        if price > orb_high and row['ema9'] > row['ema21']:
 
-            row = day.iloc[i]
+            entry = price
+            target = entry + 50
+            sl = entry - 25
 
-            if trades_today >= MAX_TRADES:
-                break
+        # ==============================
+        # SELL CONDITION
+        # ==============================
+        elif price < orb_low and row['ema9'] < row['ema21']:
 
-            if daily_pnl <= MAX_DAILY_LOSS:
-                break
+            entry = price
+            target = entry - 50
+            sl = entry + 25
 
-            # ENTRY
-            if position is None:
+        else:
+            continue
 
-                # STRONG BUY
-                if (row['close'] > orb_high and
-                    row['ema9'] > row['ema21'] and
-                    row['close'] > y_high and
-                    row['close'] > w_high):
+        # Simulate exit next candle
+        next_candle = df.iloc[i+1]
 
-                    position = 'LONG'
-                    entry = row['close']
-                    sl = orb_low
-                    target = entry + (entry - sl) * 2
-                    trades_today += 1
+        exit_price = next_candle['close']
 
-                # STRONG SELL
-                elif (row['close'] < orb_low and
-                      row['ema9'] < row['ema21'] and
-                      row['close'] < y_low and
-                      row['close'] < w_low):
+        pnl = exit_price - entry if entry < target else entry - exit_price
 
-                    position = 'SHORT'
-                    entry = row['close']
-                    sl = orb_high
-                    target = entry - (sl - entry) * 2
-                    trades_today += 1
+        total_profit += pnl
+        trades += 1
 
-            # EXIT
-            elif position == 'LONG':
+        if pnl > 0:
+            wins += 1
+        else:
+            losses += 1
+            day_loss += pnl
 
-                if row['low'] <= sl:
-                    pnl = (sl - entry) * LOT_SIZE
-                    trades.append(pnl)
-                    daily_pnl += pnl
-                    position = None
+    # ==============================
+    # RESULT
+    # ==============================
+    print("\n===== FINAL RESULT =====")
+    print("Total Trades:", trades)
+    print("Winning Trades:", wins)
+    print("Losing Trades:", losses)
 
-                elif row['high'] >= target:
-                    pnl = (target - entry) * LOT_SIZE
-                    trades.append(pnl)
-                    daily_pnl += pnl
-                    position = None
+    winrate = (wins / trades * 100) if trades > 0 else 0
+    print("Win Rate:", round(winrate, 2), "%")
+    print("Total Profit:", round(total_profit, 2))
 
-            elif position == 'SHORT':
 
-                if row['high'] >= sl:
-                    pnl = (entry - sl) * LOT_SIZE
-                    trades.append(pnl)
-                    daily_pnl += pnl
-                    position = None
-
-                elif row['low'] <= target:
-                    pnl = (entry - target) * LOT_SIZE
-                    trades.append(pnl)
-                    daily_pnl += pnl
-                    position = None
-
-    return trades
+# ==============================
+# MAIN
+# ==============================
+df = get_data()
+run_strategy(df)
