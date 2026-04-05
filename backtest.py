@@ -12,3 +12,4 @@ ACCESS_TOKEN = data["access_token"]
 kite.set_access_token(ACCESS_TOKEN)
 
 print("✅ Connected successfully")
+print(data["access_token"])
