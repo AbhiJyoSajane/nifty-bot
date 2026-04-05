@@ -1,3 +1,44 @@
+import yfinance as yf
+import pandas as pd
+
+# ========= SETTINGS =========
+SYMBOL = "^NSEI"
+INTERVAL = "5m"
+PERIOD = "60d"
+
+LOT_SIZE = 50
+MAX_TRADES = 5
+MAX_DAILY_LOSS = -2000
+
+# ========= DATA =========
+def get_data():
+    df = yf.download(SYMBOL, interval=INTERVAL, period=PERIOD, auto_adjust=True, progress=False)
+
+    if df is None or df.empty:
+        raise Exception("No data fetched")
+
+    # Fix columns
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df = df.reset_index()
+    df.columns = [str(c).lower() for c in df.columns]
+
+    print("COLUMNS:", df.columns)
+
+    if 'datetime' in df.columns:
+        df['datetime'] = pd.to_datetime(df['datetime'])
+    elif 'date' in df.columns:
+        df['datetime'] = pd.to_datetime(df['date'])
+    else:
+        raise Exception("No datetime column found")
+
+    df.set_index('datetime', inplace=True)
+
+    return df
+
+
+# ========= STRATEGY =========
 def apply_strategy(df):
 
     df['ema9'] = df['close'].ewm(span=9).mean()
@@ -19,7 +60,7 @@ def apply_strategy(df):
         daily_pnl = 0
         trades_today = 0
 
-        # ORB levels
+        # ORB (first 15 min)
         orb_high = day.iloc[:3]['high'].max()
         orb_low = day.iloc[:3]['low'].min()
 
@@ -32,10 +73,10 @@ def apply_strategy(df):
 
             row = day.iloc[i]
 
-            if trades_today >= 5:
+            if trades_today >= MAX_TRADES:
                 break
 
-            if daily_pnl <= -2000:
+            if daily_pnl <= MAX_DAILY_LOSS:
                 break
 
             # ENTRY
@@ -57,7 +98,7 @@ def apply_strategy(df):
                     target = entry - (sl - entry) * 2
                     trades_today += 1
 
-            # EXIT LOGIC
+            # EXIT
             elif position == 'LONG':
 
                 if row['low'] <= sl:
@@ -87,3 +128,21 @@ def apply_strategy(df):
                     position = None
 
     return trades
+
+
+# ========= RUN =========
+df = get_data()
+trades = apply_strategy(df)
+
+# ========= RESULT =========
+total_trades = len(trades)
+winning = len([t for t in trades if t > 0])
+losing = len([t for t in trades if t < 0])
+total_profit = sum(trades)
+
+print("\n===== FINAL RESULT =====")
+print("Total Trades:", total_trades)
+print("Winning Trades:", winning)
+print("Losing Trades:", losing)
+print("Win Rate:", (winning / total_trades * 100) if total_trades > 0 else 0, "%")
+print("Total Profit:", total_profit)
