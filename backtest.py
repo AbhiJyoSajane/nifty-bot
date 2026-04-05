@@ -2,18 +2,23 @@ import yfinance as yf
 import pandas as pd
 
 # =========================
-# FETCH DATA (5 MIN NIFTY)
+# FETCH DATA
 # =========================
 def get_data():
     df = yf.download("^NSEI", interval="5m", period="5d")
 
     df.reset_index(inplace=True)
+
+    # FIX: handle tuple columns
+    df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
     df.columns = [col.lower() for col in df.columns]
 
-    df.rename(columns={"datetime": "datetime"}, inplace=True)
+    # Ensure datetime exists
+    if 'datetime' not in df.columns:
+        df.rename(columns={'date': 'datetime'}, inplace=True)
 
     df['datetime'] = pd.to_datetime(df['datetime'])
-    
+
     return df
 
 
@@ -22,7 +27,6 @@ def get_data():
 # =========================
 def run_strategy(df):
 
-    # Indicators
     df['ema9'] = df['close'].ewm(span=9).mean()
     df['ema21'] = df['close'].ewm(span=21).mean()
     df['ema200'] = df['close'].ewm(span=200).mean()
@@ -36,7 +40,7 @@ def run_strategy(df):
         row = df.iloc[i]
         prev = df.iloc[i-1]
 
-        # ===== BUY CONDITION =====
+        # BUY
         if (
             prev['ema9'] < prev['ema21'] and
             row['ema9'] > row['ema21'] and
@@ -45,7 +49,7 @@ def run_strategy(df):
             position = "BUY"
             entry_price = row['close']
 
-        # ===== SELL CONDITION =====
+        # SELL
         elif (
             prev['ema9'] > prev['ema21'] and
             row['ema9'] < row['ema21'] and
@@ -54,7 +58,7 @@ def run_strategy(df):
             position = "SELL"
             entry_price = row['close']
 
-        # ===== EXIT LOGIC =====
+        # EXIT
         if position == "BUY":
             if row['close'] >= entry_price + 40:
                 trades.append(40)
@@ -71,7 +75,7 @@ def run_strategy(df):
                 trades.append(-20)
                 position = None
 
-    # ===== RESULTS =====
+    # RESULT
     total_trades = len(trades)
     wins = len([t for t in trades if t > 0])
     losses = len([t for t in trades if t < 0])
@@ -88,7 +92,7 @@ def run_strategy(df):
 
 
 # =========================
-# MAIN
+# RUN
 # =========================
 df = get_data()
 run_strategy(df)
