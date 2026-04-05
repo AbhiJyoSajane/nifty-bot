@@ -14,7 +14,7 @@ kite.set_access_token(ACCESS_TOKEN)
 
 print("✅ Paper Trading Started")
 
-NIFTY = 256265
+NIFTY = 256265  # NIFTY 50 instrument token
 
 position = None
 symbol = None
@@ -37,17 +37,35 @@ EXPIRY = get_expiry()
 while True:
 
     try:
-        # Get recent data
+        # =========================
+        # FETCH DATA
+        # =========================
         data = kite.historical_data(
             instrument_token=NIFTY,
-            from_date=datetime.datetime.now() - datetime.timedelta(minutes=60),
+            from_date=datetime.datetime.now() - datetime.timedelta(minutes=120),
             to_date=datetime.datetime.now(),
             interval="5minute"
         )
 
         df = pd.DataFrame(data)
 
-        # Indicators
+        # ===== FIX START =====
+        if df.empty:
+            print("⚠️ No data received, retrying...")
+            time.sleep(60)
+            continue
+
+        df.columns = [col.lower() for col in df.columns]
+
+        if 'close' not in df.columns:
+            print("⚠️ Close column missing, retrying...")
+            time.sleep(60)
+            continue
+        # ===== FIX END =====
+
+        # =========================
+        # INDICATORS
+        # =========================
         df['ema9'] = df['close'].ewm(span=9).mean()
         df['ema21'] = df['close'].ewm(span=21).mean()
         df['ema200'] = df['close'].ewm(span=200).mean()
@@ -65,24 +83,22 @@ while True:
 
             # BUY CE
             if row['ema9'] > row['ema21'] and price > row['ema200'] and row['adx'] > 10:
-                symbol = f"NFO:NIFTY{EXPIRY}{strike}CE"
+                symbol = f"NFO:NIFTY{EXPIRY}{int(strike)}CE"
 
                 quote = kite.ltp(symbol)
                 entry_premium = list(quote.values())[0]['last_price']
 
                 position = "CE"
-
                 print(f"🟢 BUY CE {strike} @ {entry_premium}")
 
             # BUY PE
             elif row['ema9'] < row['ema21'] and price < row['ema200'] and row['adx'] > 10:
-                symbol = f"NFO:NIFTY{EXPIRY}{strike}PE"
+                symbol = f"NFO:NIFTY{EXPIRY}{int(strike)}PE"
 
                 quote = kite.ltp(symbol)
                 entry_premium = list(quote.values())[0]['last_price']
 
                 position = "PE"
-
                 print(f"🔴 BUY PE {strike} @ {entry_premium}")
 
         # =========================
@@ -115,8 +131,11 @@ while True:
                 position = None
                 symbol = None
 
+        # =========================
+        # LOOP WAIT
+        # =========================
         time.sleep(60)
 
     except Exception as e:
-        print("Error:", e)
+        print("❌ Error:", e)
         time.sleep(60)
