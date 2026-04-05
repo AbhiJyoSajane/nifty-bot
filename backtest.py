@@ -23,13 +23,16 @@ def get_data():
 
 
 # =========================
-# STRATEGY (IMPROVED)
+# STRATEGY (WITH FILTER)
 # =========================
 def run_strategy(df):
 
     df['ema9'] = df['close'].ewm(span=9).mean()
     df['ema21'] = df['close'].ewm(span=21).mean()
     df['ema200'] = df['close'].ewm(span=200).mean()
+
+    # Simple trend strength (ADX-like filter)
+    df['adx'] = abs(df['ema9'] - df['ema21'])
 
     trades = []
     position = None
@@ -42,13 +45,23 @@ def run_strategy(df):
 
         row = df.iloc[i]
 
-        # BUY (relaxed condition)
-        if row['ema9'] > row['ema21'] and row['close'] > row['ema200']:
+        # BUY (with filter)
+        if (
+            position is None and
+            row['ema9'] > row['ema21'] and
+            row['close'] > row['ema200'] and
+            row['adx'] > 10
+        ):
             position = "BUY"
             entry_price = row['close']
 
-        # SELL (relaxed condition)
-        elif row['ema9'] < row['ema21'] and row['close'] < row['ema200']:
+        # SELL (with filter)
+        elif (
+            position is None and
+            row['ema9'] < row['ema21'] and
+            row['close'] < row['ema200'] and
+            row['adx'] > 10
+        ):
             position = "SELL"
             entry_price = row['close']
 
