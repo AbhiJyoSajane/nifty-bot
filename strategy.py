@@ -1,42 +1,122 @@
 from kiteconnect import KiteConnect
-from datetime import datetime, timedelta
+import pandas as pd
+import datetime
+import time
 
-# 🔑 Your credentials
+# =========================
+# CONFIG
+# =========================
 API_KEY = "btj1h6qbwop4gah2"
 ACCESS_TOKEN = "6Usfkw0Q3rKm18F1uIX5Q6VTtKZvdHEO"
 
-# 🔌 Connect (NO generate_session here)
 kite = KiteConnect(api_key=API_KEY)
 kite.set_access_token(ACCESS_TOKEN)
 
-print("✅ Connected for strategy")
+print("✅ Paper Trading Started")
 
-# 📅 Get last 30 days data
-to_date = datetime.now()
-from_date = to_date - timedelta(days=30)
+NIFTY = 256265
 
-# 📊 NIFTY 50 token
-instrument_token = 256265
+position = None
+symbol = None
+entry_premium = 0
+total_pnl = 0
 
-data = kite.historical_data(
-    instrument_token=instrument_token,
-    from_date=from_date,
-    to_date=to_date,
-    interval="5minute"
-)
+# =========================
+# GET WEEKLY EXPIRY
+# =========================
+def get_expiry():
+    today = datetime.date.today()
+    thursday = today + datetime.timedelta((3 - today.weekday()) % 7)
+    return thursday.strftime("%d%b").upper()
 
-print("Candles fetched:", len(data))
+EXPIRY = get_expiry()
 
-# 🧠 Simple test strategy
-profit = 0
+# =========================
+# MAIN LOOP
+# =========================
+while True:
 
-for candle in data:
-    open_price = candle["open"]
-    close_price = candle["close"]
+    try:
+        # Get recent data
+        data = kite.historical_data(
+            instrument_token=NIFTY,
+            from_date=datetime.datetime.now() - datetime.timedelta(minutes=60),
+            to_date=datetime.datetime.now(),
+            interval="5minute"
+        )
 
-    if close_price > open_price:
-        profit += (close_price - open_price)
-    else:
-        profit += (open_price - close_price)
+        df = pd.DataFrame(data)
 
-print("📊 Total Points Profit:", round(profit, 2))
+        # Indicators
+        df['ema9'] = df['close'].ewm(span=9).mean()
+        df['ema21'] = df['close'].ewm(span=21).mean()
+        df['ema200'] = df['close'].ewm(span=200).mean()
+        df['adx'] = abs(df['ema9'] - df['ema21'])
+
+        row = df.iloc[-1]
+        price = row['close']
+
+        # =========================
+        # ENTRY
+        # =========================
+        if position is None:
+
+            strike = round(price / 50) * 50
+
+            # BUY CE
+            if row['ema9'] > row['ema21'] and price > row['ema200'] and row['adx'] > 10:
+                symbol = f"NFO:NIFTY{EXPIRY}{strike}CE"
+
+                quote = kite.ltp(symbol)
+                entry_premium = list(quote.values())[0]['last_price']
+
+                position = "CE"
+
+                print(f"🟢 BUY CE {strike} @ {entry_premium}")
+
+            # BUY PE
+            elif row['ema9'] < row['ema21'] and price < row['ema200'] and row['adx'] > 10:
+                symbol = f"NFO:NIFTY{EXPIRY}{strike}PE"
+
+                quote = kite.ltp(symbol)
+                entry_premium = list(quote.values())[0]['last_price']
+
+                position = "PE"
+
+                print(f"🔴 BUY PE {strike} @ {entry_premium}")
+
+        # =========================
+        # EXIT
+        # =========================
+        elif position:
+
+            quote = kite.ltp(symbol)
+            current_premium = list(quote.values())[0]['last_price']
+
+            # TARGET +30 points
+            if current_premium >= entry_premium + 30:
+                profit = current_premium - entry_premium
+                total_pnl += profit
+
+                print(f"🎯 TARGET HIT | Exit @ {current_premium} | PnL: {profit}")
+                print(f"💰 TOTAL PnL: {round(total_pnl,2)}")
+
+                position = None
+                symbol = None
+
+            # SL -15 points
+            elif current_premium <= entry_premium - 15:
+                loss = current_premium - entry_premium
+                total_pnl += loss
+
+                print(f"❌ SL HIT | Exit @ {current_premium} | PnL: {loss}")
+                print(f"💰 TOTAL PnL: {round(total_pnl,2)}")
+
+                position = None
+                symbol = None
+
+        time.sleep(60)
+
+    except Exception as e:
+        print("Error:", e)
+        time.sleep(60)
