@@ -2,12 +2,11 @@ from kiteconnect import KiteConnect
 import pandas as pd
 import datetime
 import time
+import os
 
 # =========================
 # CONFIG
 # =========================
-import os
-
 api_key = os.environ.get("API_KEY")
 api_secret = os.environ.get("API_SECRET")
 request_token = os.environ.get("REQUEST_TOKEN")
@@ -20,7 +19,6 @@ access_token = data["access_token"]
 kite.set_access_token(access_token)
 
 print("✅ LOGIN SUCCESS")
-
 print("✅ Connected")
 
 NIFTY = 256265  # NIFTY 50 instrument token
@@ -81,6 +79,12 @@ while True:
         df['ema200'] = df['close'].ewm(span=200).mean()
         df['adx'] = abs(df['ema9'] - df['ema21'])
 
+        # ✅ EXTRA SAFETY (avoid index error)
+        if len(df) < 2:
+            print("⚠️ Not enough candles")
+            time.sleep(60)
+            continue
+
         row = df.iloc[-1]
         price = row['close']
 
@@ -98,8 +102,15 @@ while True:
                 row['adx'] > 10
             ):
                 symbol = f"NFO:NIFTY{EXPIRY}{int(strike)}CE"
+                print("📌 SYMBOL:", symbol)
 
                 quote = kite.ltp(symbol)
+
+                if not quote or len(quote) == 0:
+                    print("❌ LTP data not received")
+                    time.sleep(10)
+                    continue
+
                 entry_price = list(quote.values())[0]['last_price']
 
                 position = "CE"
@@ -112,8 +123,15 @@ while True:
                 row['adx'] > 10
             ):
                 symbol = f"NFO:NIFTY{EXPIRY}{int(strike)}PE"
+                print("📌 SYMBOL:", symbol)
 
                 quote = kite.ltp(symbol)
+
+                if not quote or len(quote) == 0:
+                    print("❌ LTP data not received")
+                    time.sleep(10)
+                    continue
+
                 entry_price = list(quote.values())[0]['last_price']
 
                 position = "PE"
@@ -125,6 +143,12 @@ while True:
         elif position:
 
             quote = kite.ltp(symbol)
+
+            if not quote or len(quote) == 0:
+                print("❌ LTP data not received")
+                time.sleep(10)
+                continue
+
             current_price = list(quote.values())[0]['last_price']
 
             # TARGET
