@@ -1,23 +1,21 @@
 import os
 from kiteconnect import KiteConnect
 
-# ===== LOGIN =====
-api_key = os.environ.get("btj1h6qbwop4gah2")
-api_secret = os.environ.get("3r0r7i5b13ll8um9r6wtwrtwv51rv4ev")
-request_token = os.environ.get("lABed3OluETo6DOSs2ZJ4i5z77MnDzv5")
+# Read from Railway variables
+api_key = os.environ.get("API_KEY")
+api_secret = os.environ.get("API_SECRET")
+request_token = os.environ.get("REQUEST_TOKEN")
+
 print("DEBUG TOKEN:", request_token)
+
+# Check if token exists
+if not request_token:
+    raise Exception("❌ REQUEST_TOKEN is missing in Railway variables")
+
+# Create Kite session
 kite = KiteConnect(api_key=api_key)
 
-try:
-    data = kite.generate_session(request_token, api_secret=api_secret)
-    access_token = data["access_token"]
-    kite.set_access_token(access_token)
+data = kite.generate_session(request_token, api_secret=api_secret)
 
-    print("✅ Login successful")
-
-except Exception as e:
-    print("❌ Token Error:", e)
-    exit()
-
-# ===== RUN YOUR STRATEGY =====
-import strategy
+print("✅ ACCESS TOKEN:")
+print(data["access_token"])
