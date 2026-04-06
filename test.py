@@ -1,5 +1,9 @@
 import os
+from kiteconnect import KiteConnect
 
-print("API_KEY =", os.environ.get("API_KEY"))
-print("API_SECRET =", os.environ.get("API_SECRET"))
-print("REQUEST_TOKEN =", os.environ.get("REQUEST_TOKEN"))
+api_key = os.environ.get("API_KEY")
+
+kite = KiteConnect(api_key=api_key)
+
+print("LOGIN URL:")
+print(kite.login_url())
