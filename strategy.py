@@ -6,11 +6,20 @@ import time
 # =========================
 # CONFIG
 # =========================
-API_KEY = "btj1h6qbwop4gah2"
-ACCESS_TOKEN = "6Usfkw0Q3rKm18F1uIX5Q6VTtKZvdHEO"
+import os
 
-kite = KiteConnect(api_key=API_KEY)
-kite.set_access_token(ACCESS_TOKEN)
+api_key = os.environ.get("API_KEY")
+api_secret = os.environ.get("API_SECRET")
+request_token = os.environ.get("REQUEST_TOKEN")
+
+kite = KiteConnect(api_key=api_key)
+
+data = kite.generate_session(request_token, api_secret=api_secret)
+access_token = data["access_token"]
+
+kite.set_access_token(access_token)
+
+print("✅ LOGIN SUCCESS")
 
 print("✅ Connected")
 
