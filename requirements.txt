@@ -2,4 +2,4 @@ kiteconnect
 pandas
 numpy
 python-dateutil
-requests  ✅
+requests
