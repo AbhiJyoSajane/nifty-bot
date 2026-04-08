@@ -23,9 +23,8 @@ print("✅ Connected")
 NIFTY = 256265
 
 LOT_SIZE = 65
-
-PREMIUM_TARGET = 30   # 🔥 updated
-PREMIUM_SL = 15       # 🔥 updated
+PREMIUM_TARGET = 30
+PREMIUM_SL = 15
 
 START_CAPITAL = 20000
 capital = START_CAPITAL
@@ -33,9 +32,18 @@ capital = START_CAPITAL
 AVG_PREMIUM = 120
 TRADE_CAPITAL = AVG_PREMIUM * LOT_SIZE
 
-# SAFETY RULES
 MAX_DAILY_LOSS = 2000
 MAX_TRADES_PER_DAY = 5
+
+# =========================
+# TIME FILTER FUNCTION
+# =========================
+def in_trading_time(dt):
+    t = dt.time()
+    return (
+        (datetime.time(9,30) <= t <= datetime.time(11,30)) or
+        (datetime.time(13,45) <= t <= datetime.time(15,15))
+    )
 
 # =========================
 # FETCH DATA
@@ -66,6 +74,7 @@ df['adx'] = abs(df['ema9'] - df['ema21'])
 # =========================
 position = None
 entry_price = 0
+entry_premium = 0
 
 total_pnl = 0
 trades = []
@@ -74,20 +83,22 @@ current_day = None
 daily_loss = 0
 daily_trades = 0
 
-# Assume entry premium ~120
-entry_premium = 0
-
 for i in range(1, len(df)):
 
     row = df.iloc[i]
     price = row['close']
-    date = row['date'].date()
+    dt = row['date']
+    date = dt.date()
 
     # Reset daily
     if current_day != date:
         current_day = date
         daily_loss = 0
         daily_trades = 0
+
+    # Time filter
+    if not in_trading_time(dt):
+        continue
 
     # Safety rules
     if daily_loss <= -MAX_DAILY_LOSS or daily_trades >= MAX_TRADES_PER_DAY:
@@ -99,13 +110,25 @@ for i in range(1, len(df)):
         if capital < TRADE_CAPITAL:
             continue
 
-        if row['ema9'] > row['ema21'] and price > row['ema200'] and row['adx'] > 10:
+        # CE condition
+        if (
+            row['ema9'] > row['ema21'] and
+            price > row['ema200'] and
+            row['adx'] > 15 and
+            row['close'] > row['open']
+        ):
             position = "CE"
             entry_price = price
             entry_premium = AVG_PREMIUM
             capital -= TRADE_CAPITAL
 
-        elif row['ema9'] < row['ema21'] and price < row['ema200'] and row['adx'] > 10:
+        # PE condition
+        elif (
+            row['ema9'] < row['ema21'] and
+            price < row['ema200'] and
+            row['adx'] > 15 and
+            row['close'] < row['open']
+        ):
             position = "PE"
             entry_price = price
             entry_premium = AVG_PREMIUM
@@ -114,10 +137,8 @@ for i in range(1, len(df)):
     # EXIT
     elif position:
 
-        # simulate premium movement
         nifty_move = price - entry_price
-        premium_move = nifty_move * 0.5   # approx
-
+        premium_move = nifty_move * 0.5
         current_premium = entry_premium + premium_move
 
         # TARGET
@@ -144,7 +165,7 @@ for i in range(1, len(df)):
 # =========================
 # RESULT
 # =========================
-print("\n📊 PREMIUM 30/15 BACKTEST\n")
+print("\n📊 HIGH WIN RATE STRATEGY BACKTEST\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
