@@ -3,9 +3,7 @@ import pandas as pd
 import datetime
 import os
 
-# =========================
-# CONFIG
-# =========================
+# ================= CONFIG =================
 api_key = os.environ.get("API_KEY")
 api_secret = os.environ.get("API_SECRET")
 request_token = os.environ.get("REQUEST_TOKEN")
@@ -16,153 +14,169 @@ kite.set_access_token(data["access_token"])
 
 print("✅ Connected")
 
+# ================= SETTINGS =================
 NIFTY = 256265
+LOT_SIZE = 65
 
-# =========================
-# GET EXPIRY
-# =========================
-def get_expiry():
-    today = datetime.date.today()
-    thursday = today + datetime.timedelta((3 - today.weekday()) % 7)
-    return thursday.strftime("%d%b").upper()
+START_CAPITAL = 20000
+capital = START_CAPITAL
 
-EXPIRY = get_expiry()
+PREMIUM_FACTOR = 0.5  # same as your previous stable version
 
-# =========================
-# SUPERTREND FUNCTION
-# =========================
-def supertrend(df, period=10, multiplier=3):
-
-    df['tr'] = df[['high','close']].max(axis=1) - df[['low','close']].min(axis=1)
-    df['atr'] = df['tr'].rolling(period).mean()
-
-    hl2 = (df['high'] + df['low']) / 2
-    df['upperband'] = hl2 + multiplier * df['atr']
-    df['lowerband'] = hl2 - multiplier * df['atr']
-
-    df['supertrend'] = True
-
-    for i in range(1, len(df)):
-        if df['close'][i] > df['upperband'][i-1]:
-            df.loc[i, 'supertrend'] = True
-        elif df['close'][i] < df['lowerband'][i-1]:
-            df.loc[i, 'supertrend'] = False
-        else:
-            df.loc[i, 'supertrend'] = df.loc[i-1, 'supertrend']
-
-    return df
-
-# =========================
-# FETCH DATA
-# =========================
+# ================= FETCH DATA =================
 to_date = datetime.datetime.now()
 from_date = to_date - datetime.timedelta(days=30)
 
-# NIFTY DATA (5m)
-data_nifty = kite.historical_data(
+data = kite.historical_data(
     instrument_token=NIFTY,
     from_date=from_date,
     to_date=to_date,
     interval="5minute"
 )
 
-df = pd.DataFrame(data_nifty)
+df = pd.DataFrame(data)
 df.columns = [col.lower() for col in df.columns]
 
-# =========================
-# INDICATORS (NIFTY)
-# =========================
-df['ema9'] = df['close'].ewm(span=9).mean()
-df['ema21'] = df['close'].ewm(span=21).mean()
-df['ema200'] = df['close'].ewm(span=200).mean()
-df['adx'] = abs(df['ema9'] - df['ema21'])
+# ================= INDICATORS =================
+df['ema'] = df['close'].ewm(span=20).mean()
 
-# =========================
-# BACKTEST
-# =========================
+def supertrend(df, period=10, multiplier=3):
+
+    df['tr'] = df['high'] - df['low']
+    df['atr'] = df['tr'].rolling(period).mean()
+
+    hl2 = (df['high'] + df['low']) / 2
+
+    df['upper'] = hl2 + multiplier * df['atr']
+    df['lower'] = hl2 - multiplier * df['atr']
+
+    df['st'] = True
+
+    for i in range(1, len(df)):
+        if df['close'][i] > df['upper'][i-1]:
+            df.loc[i, 'st'] = True
+        elif df['close'][i] < df['lower'][i-1]:
+            df.loc[i, 'st'] = False
+        else:
+            df.loc[i, 'st'] = df.loc[i-1, 'st']
+
+    return df
+
+df = supertrend(df)
+
+# ================= BACKTEST =================
 position = None
 entry_price = 0
-entry_premium = 0
 
-LOT_SIZE = 65
-TARGET = 15
-SL = 10
+sl_price = 0
+target_price = 0
 
-capital = 20000
-TRADE_CAPITAL = 120 * LOT_SIZE
+orb_high = None
+orb_low = None
 
-for i in range(50, len(df)):   # start later (need data)
+trades = []
+
+for i in range(30, len(df)):
 
     row = df.iloc[i]
+    prev = df.iloc[i-1]
+
     price = row['close']
+    time = row['date'].time()
 
-    strike = round(price / 50) * 50
+    # ================= RESET DAILY =================
+    if time == datetime.time(9,15):
+        orb_high = row['high']
+        orb_low = row['low']
 
-    # ================= OPTION SYMBOL =================
-    ce_symbol = f"NFO:NIFTY{EXPIRY}{int(strike)}CE"
-    pe_symbol = f"NFO:NIFTY{EXPIRY}{int(strike)}PE"
+    # ================= BUILD ORB =================
+    if datetime.time(9,15) <= time <= datetime.time(9,30):
+        orb_high = max(orb_high, row['high'])
+        orb_low = min(orb_low, row['low'])
 
-    # ================= FETCH OPTION DATA =================
-    try:
-        opt_data = kite.historical_data(
-            instrument_token=kite.ltp(ce_symbol)[ce_symbol]['instrument_token'],
-            from_date=row['date'] - datetime.timedelta(minutes=60),
-            to_date=row['date'],
-            interval="5minute"
-        )
-    except:
-        continue
-
-    df_opt = pd.DataFrame(opt_data)
-
-    if df_opt.empty:
-        continue
-
-    df_opt.columns = [col.lower() for col in df_opt.columns]
-    df_opt = supertrend(df_opt)
-
-    opt_row = df_opt.iloc[-1]
+    # ================= VOLUME =================
+    avg_vol = df['volume'].rolling(20).mean().iloc[i]
+    high_vol = row['volume'] > avg_vol * 1.5
 
     # ================= ENTRY =================
     if position is None:
 
-        # CE
-        if (
-            row['ema9'] > row['ema21'] and
-            price > row['ema200'] and
-            row['adx'] > 10 and
-            opt_row['supertrend'] == True
-        ):
-            position = "CE"
-            entry_price = price
-            entry_premium = 120
-            capital -= TRADE_CAPITAL
+        # 🔵 ORB
+        if datetime.time(9,35) <= time <= datetime.time(10,15):
 
-        # PE
-        elif (
-            row['ema9'] < row['ema21'] and
-            price < row['ema200'] and
-            row['adx'] > 10 and
-            opt_row['supertrend'] == False
-        ):
-            position = "PE"
-            entry_price = price
-            entry_premium = 120
-            capital -= TRADE_CAPITAL
+            if price > orb_high and price > prev['high'] and high_vol:
+                position = "BUY"
+                entry_price = price
+
+                sl_price = prev['low']
+                target_price = entry_price + (entry_price - sl_price) * 2
+
+            elif price < orb_low and price < prev['low'] and high_vol:
+                position = "SELL"
+                entry_price = price
+
+                sl_price = prev['high']
+                target_price = entry_price - (sl_price - entry_price) * 2
+
+        # 🟢 TREND
+        elif time > datetime.time(10,15):
+
+            if price > row['ema'] and row['st'] == True:
+                position = "BUY"
+                entry_price = price
+
+            elif price < row['ema'] and row['st'] == False:
+                position = "SELL"
+                entry_price = price
 
     # ================= EXIT =================
     elif position:
 
-        premium_move = (price - entry_price) * 0.5
+        premium_move = (price - entry_price) * PREMIUM_FACTOR
 
-        if premium_move >= TARGET:
-            capital += TRADE_CAPITAL + TARGET * LOT_SIZE
-            position = None
+        # 🔵 ORB EXIT
+        if time <= datetime.time(10,15):
 
-        elif premium_move <= -SL:
-            capital += TRADE_CAPITAL - SL * LOT_SIZE
-            position = None
+            if position == "BUY" and (price <= sl_price or price >= target_price):
+                pnl = premium_move * LOT_SIZE
+                capital += pnl
+                trades.append(pnl)
+                position = None
+
+            elif position == "SELL" and (price >= sl_price or price <= target_price):
+                pnl = premium_move * LOT_SIZE
+                capital += pnl
+                trades.append(pnl)
+                position = None
+
+        # 🟢 TREND EXIT
+        else:
+
+            if position == "BUY" and (price < row['ema'] or row['st'] == False):
+                pnl = premium_move * LOT_SIZE
+                capital += pnl
+                trades.append(pnl)
+                position = None
+
+            elif position == "SELL" and (price > row['ema'] or row['st'] == True):
+                pnl = premium_move * LOT_SIZE
+                capital += pnl
+                trades.append(pnl)
+                position = None
 
 # ================= RESULT =================
-print("Final Capital:", capital)
-print("PnL:", capital - 20000)
+wins = len([x for x in trades if x > 0])
+losses = len([x for x in trades if x < 0])
+
+print("\n📊 FINAL ORB + EMA + SUPERTREND BACKTEST\n")
+
+print(f"Starting Capital: ₹{START_CAPITAL}")
+print(f"Ending Capital: ₹{round(capital,2)}")
+print(f"Total PnL: ₹{round(capital - START_CAPITAL,2)}")
+
+print(f"\nTotal Trades: {len(trades)}")
+print(f"Winning Trades: {wins}")
+print(f"Losing Trades: {losses}")
+
+if len(trades) > 0:
+    print(f"Win Rate: {round((wins/len(trades))*100,2)}%")
