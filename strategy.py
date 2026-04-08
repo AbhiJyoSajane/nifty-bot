@@ -95,7 +95,7 @@ while True:
         row = df.iloc[-1]
         price = row['close']
 
-        print(f"📊 Price: {price} | EMA9: {row['ema9']:.2f} | EMA21: {row['ema21']:.2f}")
+        print(f"📊 Price: {price:.2f} | EMA9: {row['ema9']:.2f} | EMA21: {row['ema21']:.2f}")
 
         # =========================
         # ENTRY
@@ -113,10 +113,23 @@ while True:
                 symbol = f"NFO:NIFTY{EXPIRY}{int(strike)}CE"
 
                 quote = kite.ltp(symbol)
-                entry_price = list(quote.values())[0]['last_price']
+                if not quote:
+                    print("❌ LTP not received")
+                    time.sleep(10)
+                    continue
 
+                entry_price = list(quote.values())[0]['last_price']
                 position = "CE"
-                print(f"🟢 BUY CE {strike} @ {entry_price}")
+
+                print(f"""
+🟢 TRADE ENTRY
+Type: CE
+Strike: {strike}
+Entry Price: {entry_price}
+Target: {entry_price + TARGET}
+Stop Loss: {entry_price - SL}
+Symbol: {symbol}
+""")
 
             # BUY PE
             elif (
@@ -127,10 +140,23 @@ while True:
                 symbol = f"NFO:NIFTY{EXPIRY}{int(strike)}PE"
 
                 quote = kite.ltp(symbol)
-                entry_price = list(quote.values())[0]['last_price']
+                if not quote:
+                    print("❌ LTP not received")
+                    time.sleep(10)
+                    continue
 
+                entry_price = list(quote.values())[0]['last_price']
                 position = "PE"
-                print(f"🔴 BUY PE {strike} @ {entry_price}")
+
+                print(f"""
+🔴 TRADE ENTRY
+Type: PE
+Strike: {strike}
+Entry Price: {entry_price}
+Target: {entry_price + TARGET}
+Stop Loss: {entry_price - SL}
+Symbol: {symbol}
+""")
 
         # =========================
         # EXIT
@@ -138,6 +164,12 @@ while True:
         elif position:
 
             quote = kite.ltp(symbol)
+
+            if not quote:
+                print("❌ LTP not received")
+                time.sleep(10)
+                continue
+
             current_price = list(quote.values())[0]['last_price']
 
             print(f"📈 Current: {current_price} | Entry: {entry_price}")
@@ -147,8 +179,13 @@ while True:
                 profit = current_price - entry_price
                 total_pnl += profit
 
-                print(f"🎯 TARGET HIT @ {current_price} | PnL: {profit}")
-                print(f"💰 TOTAL: {round(total_pnl,2)}")
+                print(f"""
+🎯 TARGET HIT
+Exit Price: {current_price}
+Entry Price: {entry_price}
+Profit: {profit}
+Total PnL: {round(total_pnl,2)}
+""")
 
                 position = None
                 symbol = None
@@ -158,8 +195,13 @@ while True:
                 loss = current_price - entry_price
                 total_pnl += loss
 
-                print(f"❌ SL HIT @ {current_price} | PnL: {loss}")
-                print(f"💰 TOTAL: {round(total_pnl,2)}")
+                print(f"""
+❌ STOP LOSS HIT
+Exit Price: {current_price}
+Entry Price: {entry_price}
+Loss: {loss}
+Total PnL: {round(total_pnl,2)}
+""")
 
                 position = None
                 symbol = None
