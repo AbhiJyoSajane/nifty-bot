@@ -3,6 +3,7 @@ import pandas as pd
 import datetime
 import time
 import os
+import pytz
 
 # =========================
 # CONFIG
@@ -21,7 +22,10 @@ kite.set_access_token(access_token)
 print("✅ LOGIN SUCCESS")
 print("✅ Connected")
 
-NIFTY = 256265  # NIFTY 50 instrument token
+# =========================
+# SETTINGS
+# =========================
+NIFTY = 256265
 
 position = None
 symbol = None
@@ -48,26 +52,35 @@ while True:
 
     try:
         # =========================
-        # FETCH DATA (5 MIN)
+        # TIME (IST FIX)
+        # =========================
+        ist = pytz.timezone('Asia/Kolkata')
+        now = datetime.datetime.now(ist)
+
+        to_date = now
+        from_date = now - datetime.timedelta(minutes=300)
+
+        # =========================
+        # FETCH DATA
         # =========================
         data = kite.historical_data(
             instrument_token=NIFTY,
-            from_date=datetime.datetime.now() - datetime.timedelta(minutes=120),
-            to_date=datetime.datetime.now(),
+            from_date=from_date,
+            to_date=to_date,
             interval="5minute"
         )
 
         df = pd.DataFrame(data)
 
         if df.empty:
-            print("⚠️ No data")
+            print("⚠️ No data received from Kite")
             time.sleep(60)
             continue
 
         df.columns = [col.lower() for col in df.columns]
 
         if 'close' not in df.columns:
-            print("⚠️ Missing close")
+            print("⚠️ Close column missing")
             time.sleep(60)
             continue
 
@@ -79,14 +92,10 @@ while True:
         df['ema200'] = df['close'].ewm(span=200).mean()
         df['adx'] = abs(df['ema9'] - df['ema21'])
 
-        # ✅ EXTRA SAFETY (avoid index error)
-        if len(df) < 2:
-            print("⚠️ Not enough candles")
-            time.sleep(60)
-            continue
-
         row = df.iloc[-1]
         price = row['close']
+
+        print(f"📊 Price: {price} | EMA9: {row['ema9']:.2f} | EMA21: {row['ema21']:.2f}")
 
         # =========================
         # ENTRY
@@ -102,15 +111,8 @@ while True:
                 row['adx'] > 10
             ):
                 symbol = f"NFO:NIFTY{EXPIRY}{int(strike)}CE"
-                print("📌 SYMBOL:", symbol)
 
                 quote = kite.ltp(symbol)
-
-                if not quote or len(quote) == 0:
-                    print("❌ LTP data not received")
-                    time.sleep(10)
-                    continue
-
                 entry_price = list(quote.values())[0]['last_price']
 
                 position = "CE"
@@ -123,15 +125,8 @@ while True:
                 row['adx'] > 10
             ):
                 symbol = f"NFO:NIFTY{EXPIRY}{int(strike)}PE"
-                print("📌 SYMBOL:", symbol)
 
                 quote = kite.ltp(symbol)
-
-                if not quote or len(quote) == 0:
-                    print("❌ LTP data not received")
-                    time.sleep(10)
-                    continue
-
                 entry_price = list(quote.values())[0]['last_price']
 
                 position = "PE"
@@ -143,13 +138,9 @@ while True:
         elif position:
 
             quote = kite.ltp(symbol)
-
-            if not quote or len(quote) == 0:
-                print("❌ LTP data not received")
-                time.sleep(10)
-                continue
-
             current_price = list(quote.values())[0]['last_price']
+
+            print(f"📈 Current: {current_price} | Entry: {entry_price}")
 
             # TARGET
             if current_price >= entry_price + TARGET:
