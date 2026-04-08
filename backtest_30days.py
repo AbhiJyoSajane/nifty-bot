@@ -40,9 +40,15 @@ df.columns = [col.lower() for col in df.columns]
 position = None
 entry_price = 0
 sl_price = 0
+target_price = 0
 
 orb_high = None
 orb_low = None
+
+confirm_high = None
+confirm_low = None
+confirm_bull = False
+confirm_bear = False
 
 trades = []
 
@@ -55,71 +61,103 @@ for i in range(30, len(df)):
     time = row['date'].time()
 
     # ================= RESET DAILY =================
-    if time == datetime.time(9,15):
-        orb_high = row['high']
-        orb_low = row['low']
+    if time >= datetime.time(9,15) and time < datetime.time(9,20):
+        orb_high = None
+        orb_low = None
+        confirm_high = None
+        confirm_low = None
+        position = None
 
     # ================= BUILD ORB =================
     if datetime.time(9,15) <= time <= datetime.time(9,30):
-        orb_high = max(orb_high, row['high'])
-        orb_low = min(orb_low, row['low'])
+
+        if orb_high is None:
+            orb_high = row['high']
+            orb_low = row['low']
+        else:
+            orb_high = max(orb_high, row['high'])
+            orb_low = min(orb_low, row['low'])
+
+    # ================= CONFIRMATION CANDLE (9:30–9:35) =================
+    if time == datetime.time(9,35):
+
+        confirm_high = prev['high']
+        confirm_low = prev['low']
+
+        confirm_bull = prev['close'] > prev['open']
+        confirm_bear = prev['close'] < prev['open']
 
     # ================= VOLUME =================
     avg_vol = df['volume'].rolling(20).mean().iloc[i]
-    high_vol = row['volume'] > avg_vol * 1.5
+    high_vol = row['volume'] > avg_vol * 1.2
 
     # ================= ENTRY =================
-    if position is None and datetime.time(9,35) <= time <= datetime.time(10,30):
+    if position is None and time > datetime.time(9,35):
 
         # BUY
-        if price > orb_high and price > prev['high'] and high_vol:
+        if (
+            orb_high is not None and
+            price > orb_high and
+            confirm_bull and
+            high_vol
+        ):
             position = "BUY"
             entry_price = price
-            sl_price = prev['low']
+
+            sl_price = confirm_low
+            risk = entry_price - sl_price
+            target_price = entry_price + (2 * risk)
 
         # SELL
-        elif price < orb_low and price < prev['low'] and high_vol:
+        elif (
+            orb_low is not None and
+            price < orb_low and
+            confirm_bear and
+            high_vol
+        ):
             position = "SELL"
             entry_price = price
-            sl_price = prev['high']
+
+            sl_price = confirm_high
+            risk = sl_price - entry_price
+            target_price = entry_price - (2 * risk)
 
     # ================= EXIT =================
     elif position:
 
         premium_move = (price - entry_price) * PREMIUM_FACTOR
 
-        # 🔴 BUY EXIT
+        # BUY
         if position == "BUY":
 
-            # SL HIT
-            if price <= sl_price:
+            if price <= sl_price or price >= target_price:
                 pnl = premium_move * LOT_SIZE
                 capital += pnl
                 trades.append(pnl)
                 position = None
 
             else:
-                # 🔥 TRAILING SL (previous candle low)
+                # TRAILING
                 sl_price = max(sl_price, prev['low'])
 
-        # 🔴 SELL EXIT
+        # SELL
         elif position == "SELL":
 
-            if price >= sl_price:
+            if price >= sl_price or price <= target_price:
                 pnl = premium_move * LOT_SIZE
                 capital += pnl
                 trades.append(pnl)
                 position = None
 
             else:
-                # 🔥 TRAILING SL (previous candle high)
+                # TRAILING
                 sl_price = min(sl_price, prev['high'])
 
 # ================= RESULT =================
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 PURE ORB BACKTEST (TRAILING)\n")
+print("\n📊 STRICT ORB (CONFIRMATION + RR + TRAILING)\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
