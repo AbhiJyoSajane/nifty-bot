@@ -51,18 +51,14 @@ EXPIRY = get_expiry()
 while True:
 
     try:
-        # =========================
-        # TIME (IST FIX)
-        # =========================
+        # TIME (IST)
         ist = pytz.timezone('Asia/Kolkata')
         now = datetime.datetime.now(ist)
 
         to_date = now
         from_date = now - datetime.timedelta(minutes=300)
 
-        # =========================
         # FETCH DATA
-        # =========================
         data = kite.historical_data(
             instrument_token=NIFTY,
             from_date=from_date,
@@ -84,9 +80,7 @@ while True:
             time.sleep(60)
             continue
 
-        # =========================
         # INDICATORS
-        # =========================
         df['ema9'] = df['close'].ewm(span=9).mean()
         df['ema21'] = df['close'].ewm(span=21).mean()
         df['ema200'] = df['close'].ewm(span=200).mean()
@@ -112,13 +106,14 @@ while True:
             ):
                 symbol = f"NFO:NIFTY{EXPIRY}{int(strike)}CE"
 
-                quote = kite.ltp(symbol)
-                if not quote:
-                    print("❌ LTP not received")
+                try:
+                    quote = kite.ltp([symbol])
+                    entry_price = quote[symbol]['last_price']
+                except Exception as e:
+                    print(f"❌ LTP error for {symbol}: {e}")
                     time.sleep(10)
                     continue
 
-                entry_price = list(quote.values())[0]['last_price']
                 position = "CE"
 
                 print(f"""
@@ -139,13 +134,14 @@ Symbol: {symbol}
             ):
                 symbol = f"NFO:NIFTY{EXPIRY}{int(strike)}PE"
 
-                quote = kite.ltp(symbol)
-                if not quote:
-                    print("❌ LTP not received")
+                try:
+                    quote = kite.ltp([symbol])
+                    entry_price = quote[symbol]['last_price']
+                except Exception as e:
+                    print(f"❌ LTP error for {symbol}: {e}")
                     time.sleep(10)
                     continue
 
-                entry_price = list(quote.values())[0]['last_price']
                 position = "PE"
 
                 print(f"""
@@ -163,14 +159,13 @@ Symbol: {symbol}
         # =========================
         elif position:
 
-            quote = kite.ltp(symbol)
-
-            if not quote:
-                print("❌ LTP not received")
+            try:
+                quote = kite.ltp([symbol])
+                current_price = quote[symbol]['last_price']
+            except Exception as e:
+                print(f"❌ LTP error: {e}")
                 time.sleep(10)
                 continue
-
-            current_price = list(quote.values())[0]['last_price']
 
             print(f"📈 Current: {current_price} | Entry: {entry_price}")
 
