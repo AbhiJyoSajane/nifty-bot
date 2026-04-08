@@ -16,30 +16,17 @@ kite.set_access_token(data["access_token"])
 
 print("✅ Connected")
 
-# =========================
-# SETTINGS
-# =========================
 NIFTY = 256265
-LOT_SIZE = 65
-
-START_CAPITAL = 20000
-capital = START_CAPITAL
-
-AVG_PREMIUM = 120
-TRADE_CAPITAL = AVG_PREMIUM * LOT_SIZE
-
-MAX_DAILY_LOSS = 2000
-MAX_TRADES_PER_DAY = 5
 
 # =========================
-# TIME FILTER
+# GET EXPIRY
 # =========================
-def in_time(dt):
-    t = dt.time()
-    return (
-        (datetime.time(9,30) <= t <= datetime.time(11,30)) or
-        (datetime.time(13,45) <= t <= datetime.time(15,15))
-    )
+def get_expiry():
+    today = datetime.date.today()
+    thursday = today + datetime.timedelta((3 - today.weekday()) % 7)
+    return thursday.strftime("%d%b").upper()
+
+EXPIRY = get_expiry()
 
 # =========================
 # SUPERTREND FUNCTION
@@ -66,51 +53,24 @@ def supertrend(df, period=10, multiplier=3):
     return df
 
 # =========================
-# FETCH 5 MIN DATA
+# FETCH DATA
 # =========================
 to_date = datetime.datetime.now()
 from_date = to_date - datetime.timedelta(days=30)
 
-data_5m = kite.historical_data(
+# NIFTY DATA (5m)
+data_nifty = kite.historical_data(
     instrument_token=NIFTY,
     from_date=from_date,
     to_date=to_date,
     interval="5minute"
 )
 
-df5 = pd.DataFrame(data_5m)
-df5.columns = [col.lower() for col in df5.columns]
+df = pd.DataFrame(data_nifty)
+df.columns = [col.lower() for col in df.columns]
 
 # =========================
-# FETCH 1 MIN DATA (SUPERTREND)
-# =========================
-data_1m = kite.historical_data(
-    instrument_token=NIFTY,
-    from_date=from_date,
-    to_date=to_date,
-    interval="minute"
-)
-
-df1 = pd.DataFrame(data_1m)
-df1.columns = [col.lower() for col in df1.columns]
-
-df1 = supertrend(df1)
-
-# =========================
-# MERGE 1m → 5m
-# =========================
-df1['date'] = pd.to_datetime(df1['date'])
-df5['date'] = pd.to_datetime(df5['date'])
-
-df1 = df1[['date', 'supertrend']]
-
-df = pd.merge_asof(df5.sort_values('date'),
-                   df1.sort_values('date'),
-                   on='date',
-                   direction='backward')
-
-# =========================
-# INDICATORS (5m)
+# INDICATORS (NIFTY)
 # =========================
 df['ema9'] = df['close'].ewm(span=9).mean()
 df['ema21'] = df['close'].ewm(span=21).mean()
@@ -124,51 +84,58 @@ position = None
 entry_price = 0
 entry_premium = 0
 
+LOT_SIZE = 65
 TARGET = 15
 SL = 10
 
-total_pnl = 0
-trades = []
+capital = 20000
+TRADE_CAPITAL = 120 * LOT_SIZE
 
-current_day = None
-daily_loss = 0
-daily_trades = 0
-
-for i in range(1, len(df)):
+for i in range(50, len(df)):   # start later (need data)
 
     row = df.iloc[i]
     price = row['close']
-    dt = row['date']
-    date = dt.date()
 
-    if current_day != date:
-        current_day = date
-        daily_loss = 0
-        daily_trades = 0
+    strike = round(price / 50) * 50
 
-    if not in_time(dt):
+    # ================= OPTION SYMBOL =================
+    ce_symbol = f"NFO:NIFTY{EXPIRY}{int(strike)}CE"
+    pe_symbol = f"NFO:NIFTY{EXPIRY}{int(strike)}PE"
+
+    # ================= FETCH OPTION DATA =================
+    try:
+        opt_data = kite.historical_data(
+            instrument_token=kite.ltp(ce_symbol)[ce_symbol]['instrument_token'],
+            from_date=row['date'] - datetime.timedelta(minutes=60),
+            to_date=row['date'],
+            interval="5minute"
+        )
+    except:
         continue
 
-    if daily_loss <= -MAX_DAILY_LOSS or daily_trades >= MAX_TRADES_PER_DAY:
+    df_opt = pd.DataFrame(opt_data)
+
+    if df_opt.empty:
         continue
 
-    # ENTRY
+    df_opt.columns = [col.lower() for col in df_opt.columns]
+    df_opt = supertrend(df_opt)
+
+    opt_row = df_opt.iloc[-1]
+
+    # ================= ENTRY =================
     if position is None:
-
-        if capital < TRADE_CAPITAL:
-            continue
 
         # CE
         if (
             row['ema9'] > row['ema21'] and
             price > row['ema200'] and
             row['adx'] > 10 and
-            row['close'] > row['open'] and
-            row['supertrend'] == True
+            opt_row['supertrend'] == True
         ):
             position = "CE"
             entry_price = price
-            entry_premium = AVG_PREMIUM
+            entry_premium = 120
             capital -= TRADE_CAPITAL
 
         # PE
@@ -176,56 +143,26 @@ for i in range(1, len(df)):
             row['ema9'] < row['ema21'] and
             price < row['ema200'] and
             row['adx'] > 10 and
-            row['close'] < row['open'] and
-            row['supertrend'] == False
+            opt_row['supertrend'] == False
         ):
             position = "PE"
             entry_price = price
-            entry_premium = AVG_PREMIUM
+            entry_premium = 120
             capital -= TRADE_CAPITAL
 
-    # EXIT
+    # ================= EXIT =================
     elif position:
 
         premium_move = (price - entry_price) * 0.5
 
         if premium_move >= TARGET:
-            pnl = TARGET * LOT_SIZE
-            capital += TRADE_CAPITAL + pnl
-            total_pnl += pnl
-            trades.append(pnl)
-
-            daily_trades += 1
+            capital += TRADE_CAPITAL + TARGET * LOT_SIZE
             position = None
 
         elif premium_move <= -SL:
-            pnl = -SL * LOT_SIZE
-            capital += TRADE_CAPITAL + pnl
-            total_pnl += pnl
-            trades.append(pnl)
-
-            daily_loss += pnl
-            daily_trades += 1
+            capital += TRADE_CAPITAL - SL * LOT_SIZE
             position = None
 
-# =========================
-# RESULT
-# =========================
-real_pnl = capital - START_CAPITAL
-
-print("\n📊 5m STRATEGY + 1m SUPERTREND\n")
-
-print(f"Starting Capital: ₹{START_CAPITAL}")
-print(f"Ending Capital: ₹{round(capital,2)}")
-print(f"Total PnL: ₹{round(real_pnl,2)}")
-
-print(f"\nTotal Trades: {len(trades)}")
-
-wins = len([x for x in trades if x > 0])
-losses = len([x for x in trades if x < 0])
-
-print(f"Winning Trades: {wins}")
-print(f"Losing Trades: {losses}")
-
-if len(trades) > 0:
-    print(f"Win Rate: {round((wins/len(trades))*100,2)}%")
+# ================= RESULT =================
+print("Final Capital:", capital)
+print("PnL:", capital - 20000)
