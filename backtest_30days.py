@@ -21,10 +21,7 @@ print("✅ Connected")
 # SETTINGS
 # =========================
 NIFTY = 256265
-
 LOT_SIZE = 65
-PREMIUM_TARGET = 30
-PREMIUM_SL = 15
 
 START_CAPITAL = 20000
 capital = START_CAPITAL
@@ -36,9 +33,9 @@ MAX_DAILY_LOSS = 2000
 MAX_TRADES_PER_DAY = 5
 
 # =========================
-# TIME FILTER FUNCTION
+# TIME FILTER
 # =========================
-def in_trading_time(dt):
+def in_time(dt):
     t = dt.time()
     return (
         (datetime.time(9,30) <= t <= datetime.time(11,30)) or
@@ -75,6 +72,7 @@ df['adx'] = abs(df['ema9'] - df['ema21'])
 position = None
 entry_price = 0
 entry_premium = 0
+sl_price = 0
 
 total_pnl = 0
 trades = []
@@ -83,77 +81,103 @@ current_day = None
 daily_loss = 0
 daily_trades = 0
 
-for i in range(1, len(df)):
+for i in range(2, len(df)):
 
     row = df.iloc[i]
+    prev = df.iloc[i-1]
+
     price = row['close']
     dt = row['date']
     date = dt.date()
 
-    # Reset daily
+    # reset
     if current_day != date:
         current_day = date
         daily_loss = 0
         daily_trades = 0
 
-    # Time filter
-    if not in_trading_time(dt):
+    if not in_time(dt):
         continue
 
-    # Safety rules
     if daily_loss <= -MAX_DAILY_LOSS or daily_trades >= MAX_TRADES_PER_DAY:
         continue
 
-    # ENTRY
+    # ================= ENTRY =================
     if position is None:
 
         if capital < TRADE_CAPITAL:
             continue
 
-        # CE condition
+        # CE
         if (
             row['ema9'] > row['ema21'] and
             price > row['ema200'] and
-            row['adx'] > 15 and
+            row['adx'] > 12 and
             row['close'] > row['open']
         ):
             position = "CE"
             entry_price = price
             entry_premium = AVG_PREMIUM
+
+            # dynamic SL (previous low)
+            sl_price = prev['low']
+
             capital -= TRADE_CAPITAL
 
-        # PE condition
+        # PE
         elif (
             row['ema9'] < row['ema21'] and
             price < row['ema200'] and
-            row['adx'] > 15 and
+            row['adx'] > 12 and
             row['close'] < row['open']
         ):
             position = "PE"
             entry_price = price
             entry_premium = AVG_PREMIUM
+
+            # dynamic SL (previous high)
+            sl_price = prev['high']
+
             capital -= TRADE_CAPITAL
 
-    # EXIT
+    # ================= EXIT =================
     elif position:
 
         nifty_move = price - entry_price
         premium_move = nifty_move * 0.5
         current_premium = entry_premium + premium_move
 
-        # TARGET
-        if current_premium >= entry_premium + PREMIUM_TARGET:
-            pnl = PREMIUM_TARGET * LOT_SIZE
+        # 🎯 TARGET
+        if premium_move >= 30:
+            pnl = 30 * LOT_SIZE
             capital += TRADE_CAPITAL + pnl
             total_pnl += pnl
             trades.append(pnl)
 
             daily_trades += 1
             position = None
+            continue
 
-        # STOP LOSS
-        elif current_premium <= entry_premium - PREMIUM_SL:
-            pnl = -PREMIUM_SL * LOT_SIZE
+        # 🚀 TRAILING LOGIC
+        if premium_move > 15:
+            sl_price = entry_price  # cost to cost
+
+        if premium_move > 25:
+            sl_price = entry_price + 10  # lock profit
+
+        # 🛑 STOP LOSS (dynamic)
+        if position == "CE" and price <= sl_price:
+            pnl = (current_premium - entry_premium) * LOT_SIZE
+            capital += TRADE_CAPITAL + pnl
+            total_pnl += pnl
+            trades.append(pnl)
+
+            daily_loss += pnl
+            daily_trades += 1
+            position = None
+
+        elif position == "PE" and price >= sl_price:
+            pnl = (current_premium - entry_premium) * LOT_SIZE
             capital += TRADE_CAPITAL + pnl
             total_pnl += pnl
             trades.append(pnl)
@@ -165,7 +189,7 @@ for i in range(1, len(df)):
 # =========================
 # RESULT
 # =========================
-print("\n📊 HIGH WIN RATE STRATEGY BACKTEST\n")
+print("\n📊 DYNAMIC SL + TRAILING BACKTEST\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
