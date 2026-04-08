@@ -17,7 +17,6 @@ print("✅ Connected")
 # ================= SETTINGS =================
 NIFTY = 256265
 LOT_SIZE = 65
-
 START_CAPITAL = 20000
 capital = START_CAPITAL
 
@@ -37,39 +36,10 @@ data = kite.historical_data(
 df = pd.DataFrame(data)
 df.columns = [col.lower() for col in df.columns]
 
-# ================= INDICATORS =================
-df['ema'] = df['close'].ewm(span=20).mean()
-
-def supertrend(df, period=10, multiplier=3):
-
-    df['tr'] = df['high'] - df['low']
-    df['atr'] = df['tr'].rolling(period).mean()
-
-    hl2 = (df['high'] + df['low']) / 2
-
-    df['upper'] = hl2 + multiplier * df['atr']
-    df['lower'] = hl2 - multiplier * df['atr']
-
-    df['st'] = True
-
-    for i in range(1, len(df)):
-        if df['close'][i] > df['upper'][i-1]:
-            df.loc[i, 'st'] = True
-        elif df['close'][i] < df['lower'][i-1]:
-            df.loc[i, 'st'] = False
-        else:
-            df.loc[i, 'st'] = df.loc[i-1, 'st']
-
-    return df
-
-df = supertrend(df)
-
 # ================= BACKTEST =================
 position = None
 entry_price = 0
-
 sl_price = 0
-target_price = 0
 
 orb_high = None
 orb_low = None
@@ -99,86 +69,57 @@ for i in range(30, len(df)):
     high_vol = row['volume'] > avg_vol * 1.5
 
     # ================= ENTRY =================
-    if position is None:
+    if position is None and datetime.time(9,35) <= time <= datetime.time(10,30):
 
-        # 🔵 ORB
-        if datetime.time(9,35) <= time <= datetime.time(10,15):
+        # BUY
+        if price > orb_high and price > prev['high'] and high_vol:
+            position = "BUY"
+            entry_price = price
+            sl_price = prev['low']
 
-            if price > orb_high and price > prev['high'] and high_vol:
-                position = "BUY"
-                entry_price = price
-
-                sl_price = prev['low']
-                target_price = entry_price + (entry_price - sl_price) * 2
-
-            elif price < orb_low and price < prev['low'] and high_vol:
-                position = "SELL"
-                entry_price = price
-
-                sl_price = prev['high']
-                target_price = entry_price - (sl_price - entry_price) * 2
-
-        # 🟢 TREND
-        elif time > datetime.time(10,15):
-
-            if price > row['ema'] and row['st'] == True:
-                position = "BUY"
-                entry_price = price
-
-                sl_price = entry_price - (10 / PREMIUM_FACTOR)
-                target_price = entry_price + (20 / PREMIUM_FACTOR)
-
-            elif price < row['ema'] and row['st'] == False:
-                position = "SELL"
-                entry_price = price
-
-                sl_price = entry_price + (10 / PREMIUM_FACTOR)
-                target_price = entry_price - (20 / PREMIUM_FACTOR)
+        # SELL
+        elif price < orb_low and price < prev['low'] and high_vol:
+            position = "SELL"
+            entry_price = price
+            sl_price = prev['high']
 
     # ================= EXIT =================
     elif position:
 
         premium_move = (price - entry_price) * PREMIUM_FACTOR
 
-        # 🔵 ORB EXIT
-        if time <= datetime.time(10,15):
+        # 🔴 BUY EXIT
+        if position == "BUY":
 
-            if position == "BUY" and (price <= sl_price or price >= target_price):
+            # SL HIT
+            if price <= sl_price:
                 pnl = premium_move * LOT_SIZE
                 capital += pnl
                 trades.append(pnl)
                 position = None
 
-            elif position == "SELL" and (price >= sl_price or price <= target_price):
+            else:
+                # 🔥 TRAILING SL (previous candle low)
+                sl_price = max(sl_price, prev['low'])
+
+        # 🔴 SELL EXIT
+        elif position == "SELL":
+
+            if price >= sl_price:
                 pnl = premium_move * LOT_SIZE
                 capital += pnl
                 trades.append(pnl)
                 position = None
 
-        # 🟢 TREND EXIT
-        else:
-
-            if position == "BUY":
-
-                if price <= sl_price or price >= target_price or price < row['ema'] or row['st'] == False:
-                    pnl = premium_move * LOT_SIZE
-                    capital += pnl
-                    trades.append(pnl)
-                    position = None
-
-            elif position == "SELL":
-
-                if price >= sl_price or price <= target_price or price > row['ema'] or row['st'] == True:
-                    pnl = premium_move * LOT_SIZE
-                    capital += pnl
-                    trades.append(pnl)
-                    position = None
+            else:
+                # 🔥 TRAILING SL (previous candle high)
+                sl_price = min(sl_price, prev['high'])
 
 # ================= RESULT =================
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 FINAL ORB + TREND (WITH SL/TP FIX)\n")
+print("\n📊 PURE ORB BACKTEST (TRAILING)\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
