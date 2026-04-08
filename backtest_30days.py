@@ -23,17 +23,15 @@ print("✅ Connected")
 NIFTY = 256265
 
 LOT_SIZE = 65
+TARGET = 15
+SL = 10
+
 START_CAPITAL = 20000
 capital = START_CAPITAL
 
 AVG_PREMIUM = 120
 TRADE_CAPITAL = AVG_PREMIUM * LOT_SIZE
 
-# Strategy params
-TARGET = 30
-BASE_SL = -12   # 🔥 base premium SL
-
-# Safety rules
 MAX_DAILY_LOSS = 2000
 MAX_TRADES_PER_DAY = 5
 
@@ -116,7 +114,7 @@ for i in range(1, len(df)):
         if (
             row['ema9'] > row['ema21'] and
             price > row['ema200'] and
-            row['adx'] > 12 and
+            row['adx'] > 10 and
             row['close'] > row['open']
         ):
             position = "CE"
@@ -128,7 +126,7 @@ for i in range(1, len(df)):
         elif (
             row['ema9'] < row['ema21'] and
             price < row['ema200'] and
-            row['adx'] > 12 and
+            row['adx'] > 10 and
             row['close'] < row['open']
         ):
             position = "PE"
@@ -141,9 +139,8 @@ for i in range(1, len(df)):
 
         nifty_move = price - entry_price
         premium_move = nifty_move * 0.5
-        current_premium = entry_premium + premium_move
 
-        # 🎯 TARGET
+        # TARGET
         if premium_move >= TARGET:
             pnl = TARGET * LOT_SIZE
             capital += TRADE_CAPITAL + pnl
@@ -152,20 +149,10 @@ for i in range(1, len(df)):
 
             daily_trades += 1
             position = None
-            continue
 
-        # 🚀 TRAILING SL
-        trail_sl = BASE_SL
-
-        if premium_move > 15:
-            trail_sl = 0   # cost
-
-        if premium_move > 25:
-            trail_sl = 10  # lock profit
-
-        # 🛑 STOP LOSS
-        if premium_move <= trail_sl:
-            pnl = premium_move * LOT_SIZE
+        # STOP LOSS
+        elif premium_move <= -SL:
+            pnl = -SL * LOT_SIZE
             capital += TRADE_CAPITAL + pnl
             total_pnl += pnl
             trades.append(pnl)
@@ -177,7 +164,7 @@ for i in range(1, len(df)):
 # =========================
 # RESULT
 # =========================
-print("\n📊 FINAL DYNAMIC + TRAILING BACKTEST\n")
+print("\n📊 FINAL LOCKED STRATEGY BACKTEST\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
