@@ -11,7 +11,6 @@ api_secret = os.environ.get("API_SECRET")
 request_token = os.environ.get("REQUEST_TOKEN")
 
 kite = KiteConnect(api_key=api_key)
-
 data = kite.generate_session(request_token, api_secret=api_secret)
 kite.set_access_token(data["access_token"])
 
@@ -43,7 +42,7 @@ def in_time(dt):
     )
 
 # =========================
-# SUPERTREND FUNCTION (FIXED)
+# SUPERTREND (FIXED)
 # =========================
 def supertrend(df, period=10, multiplier=3):
 
@@ -99,6 +98,9 @@ position = None
 entry_price = 0
 entry_premium = 0
 
+sl_points = 0
+target_points = 0
+
 total_pnl = 0
 trades = []
 
@@ -141,6 +143,13 @@ for i in range(1, len(df)):
             position = "CE"
             entry_price = price
             entry_premium = AVG_PREMIUM
+
+            sl_points = (entry_price - row['lowerband']) * 0.5
+            if sl_points <= 0:
+                sl_points = 10
+
+            target_points = sl_points * 2
+
             capital -= TRADE_CAPITAL
 
         # PE
@@ -154,6 +163,13 @@ for i in range(1, len(df)):
             position = "PE"
             entry_price = price
             entry_premium = AVG_PREMIUM
+
+            sl_points = (row['upperband'] - entry_price) * 0.5
+            if sl_points <= 0:
+                sl_points = 10
+
+            target_points = sl_points * 2
+
             capital -= TRADE_CAPITAL
 
     # ================= EXIT =================
@@ -162,19 +178,7 @@ for i in range(1, len(df)):
         nifty_move = price - entry_price
         premium_move = nifty_move * 0.5
 
-        # ================= DYNAMIC SL =================
-        if position == "CE":
-            sl_points = (price - row['lowerband']) * 0.5
-        else:
-            sl_points = (row['upperband'] - price) * 0.5
-
-        # fallback
-        if sl_points <= 0:
-            sl_points = 10
-
-        target_points = sl_points * 2
-
-        # 🎯 TARGET
+        # TARGET
         if premium_move >= target_points:
             pnl = target_points * LOT_SIZE
             capital += TRADE_CAPITAL + pnl
@@ -184,7 +188,7 @@ for i in range(1, len(df)):
             daily_trades += 1
             position = None
 
-        # 🛑 SL
+        # SL
         elif premium_move <= -sl_points:
             pnl = -sl_points * LOT_SIZE
             capital += TRADE_CAPITAL + pnl
@@ -198,7 +202,7 @@ for i in range(1, len(df)):
 # =========================
 # RESULT
 # =========================
-print("\n📊 SUPERTREND RR 1:2 STRATEGY\n")
+print("\n📊 FINAL SUPERTREND RR (FIXED)\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
