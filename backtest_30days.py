@@ -42,7 +42,7 @@ def in_time(dt):
     )
 
 # =========================
-# SUPERTREND (FIXED)
+# SUPERTREND FUNCTION
 # =========================
 def supertrend(df, period=10, multiplier=3):
 
@@ -66,30 +66,56 @@ def supertrend(df, period=10, multiplier=3):
     return df
 
 # =========================
-# FETCH DATA
+# FETCH 5 MIN DATA
 # =========================
 to_date = datetime.datetime.now()
 from_date = to_date - datetime.timedelta(days=30)
 
-data = kite.historical_data(
+data_5m = kite.historical_data(
     instrument_token=NIFTY,
     from_date=from_date,
     to_date=to_date,
     interval="5minute"
 )
 
-df = pd.DataFrame(data)
-df.columns = [col.lower() for col in df.columns]
+df5 = pd.DataFrame(data_5m)
+df5.columns = [col.lower() for col in df5.columns]
 
 # =========================
-# INDICATORS
+# FETCH 1 MIN DATA (SUPERTREND)
+# =========================
+data_1m = kite.historical_data(
+    instrument_token=NIFTY,
+    from_date=from_date,
+    to_date=to_date,
+    interval="minute"
+)
+
+df1 = pd.DataFrame(data_1m)
+df1.columns = [col.lower() for col in df1.columns]
+
+df1 = supertrend(df1)
+
+# =========================
+# MERGE 1m → 5m
+# =========================
+df1['date'] = pd.to_datetime(df1['date'])
+df5['date'] = pd.to_datetime(df5['date'])
+
+df1 = df1[['date', 'supertrend']]
+
+df = pd.merge_asof(df5.sort_values('date'),
+                   df1.sort_values('date'),
+                   on='date',
+                   direction='backward')
+
+# =========================
+# INDICATORS (5m)
 # =========================
 df['ema9'] = df['close'].ewm(span=9).mean()
 df['ema21'] = df['close'].ewm(span=21).mean()
 df['ema200'] = df['close'].ewm(span=200).mean()
 df['adx'] = abs(df['ema9'] - df['ema21'])
-
-df = supertrend(df)
 
 # =========================
 # BACKTEST
@@ -98,8 +124,8 @@ position = None
 entry_price = 0
 entry_premium = 0
 
-sl_points = 0
-target_points = 0
+TARGET = 15
+SL = 10
 
 total_pnl = 0
 trades = []
@@ -126,7 +152,7 @@ for i in range(1, len(df)):
     if daily_loss <= -MAX_DAILY_LOSS or daily_trades >= MAX_TRADES_PER_DAY:
         continue
 
-    # ================= ENTRY =================
+    # ENTRY
     if position is None:
 
         if capital < TRADE_CAPITAL:
@@ -143,13 +169,6 @@ for i in range(1, len(df)):
             position = "CE"
             entry_price = price
             entry_premium = AVG_PREMIUM
-
-            sl_points = (entry_price - row['lowerband']) * 0.5
-            if sl_points <= 0:
-                sl_points = 10
-
-            target_points = sl_points * 2
-
             capital -= TRADE_CAPITAL
 
         # PE
@@ -163,24 +182,15 @@ for i in range(1, len(df)):
             position = "PE"
             entry_price = price
             entry_premium = AVG_PREMIUM
-
-            sl_points = (row['upperband'] - entry_price) * 0.5
-            if sl_points <= 0:
-                sl_points = 10
-
-            target_points = sl_points * 2
-
             capital -= TRADE_CAPITAL
 
-    # ================= EXIT =================
+    # EXIT
     elif position:
 
-        nifty_move = price - entry_price
-        premium_move = nifty_move * 0.5
+        premium_move = (price - entry_price) * 0.5
 
-        # TARGET
-        if premium_move >= target_points:
-            pnl = target_points * LOT_SIZE
+        if premium_move >= TARGET:
+            pnl = TARGET * LOT_SIZE
             capital += TRADE_CAPITAL + pnl
             total_pnl += pnl
             trades.append(pnl)
@@ -188,9 +198,8 @@ for i in range(1, len(df)):
             daily_trades += 1
             position = None
 
-        # SL
-        elif premium_move <= -sl_points:
-            pnl = -sl_points * LOT_SIZE
+        elif premium_move <= -SL:
+            pnl = -SL * LOT_SIZE
             capital += TRADE_CAPITAL + pnl
             total_pnl += pnl
             trades.append(pnl)
@@ -202,11 +211,13 @@ for i in range(1, len(df)):
 # =========================
 # RESULT
 # =========================
-print("\n📊 FINAL SUPERTREND RR (FIXED)\n")
+real_pnl = capital - START_CAPITAL
+
+print("\n📊 5m STRATEGY + 1m SUPERTREND\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
-print(f"Total PnL: ₹{round(total_pnl,2)}")
+print(f"Total PnL: ₹{round(real_pnl,2)}")
 
 print(f"\nTotal Trades: {len(trades)}")
 
