@@ -46,6 +46,29 @@ def in_time(dt):
     )
 
 # =========================
+# SUPERTREND FUNCTION
+# =========================
+def supertrend(df, period=10, multiplier=3):
+    df['tr'] = df[['high','close']].max(axis=1) - df[['low','close']].min(axis=1)
+    df['atr'] = df['tr'].rolling(period).mean()
+
+    hl2 = (df['high'] + df['low']) / 2
+    df['upperband'] = hl2 + multiplier * df['atr']
+    df['lowerband'] = hl2 - multiplier * df['atr']
+
+    df['supertrend'] = True
+
+    for i in range(1, len(df)):
+        if df['close'][i] > df['upperband'][i-1]:
+            df['supertrend'][i] = True
+        elif df['close'][i] < df['lowerband'][i-1]:
+            df['supertrend'][i] = False
+        else:
+            df['supertrend'][i] = df['supertrend'][i-1]
+
+    return df
+
+# =========================
 # FETCH DATA
 # =========================
 to_date = datetime.datetime.now()
@@ -69,6 +92,8 @@ df['ema21'] = df['close'].ewm(span=21).mean()
 df['ema200'] = df['close'].ewm(span=200).mean()
 df['adx'] = abs(df['ema9'] - df['ema21'])
 
+df = supertrend(df)
+
 # =========================
 # BACKTEST
 # =========================
@@ -90,17 +115,14 @@ for i in range(1, len(df)):
     dt = row['date']
     date = dt.date()
 
-    # Reset daily
     if current_day != date:
         current_day = date
         daily_loss = 0
         daily_trades = 0
 
-    # Time filter
     if not in_time(dt):
         continue
 
-    # Safety rules
     if daily_loss <= -MAX_DAILY_LOSS or daily_trades >= MAX_TRADES_PER_DAY:
         continue
 
@@ -110,24 +132,26 @@ for i in range(1, len(df)):
         if capital < TRADE_CAPITAL:
             continue
 
-        # CE condition
+        # CE
         if (
             row['ema9'] > row['ema21'] and
             price > row['ema200'] and
             row['adx'] > 10 and
-            row['close'] > row['open']
+            row['close'] > row['open'] and
+            row['supertrend'] == True
         ):
             position = "CE"
             entry_price = price
             entry_premium = AVG_PREMIUM
             capital -= TRADE_CAPITAL
 
-        # PE condition
+        # PE
         elif (
             row['ema9'] < row['ema21'] and
             price < row['ema200'] and
             row['adx'] > 10 and
-            row['close'] < row['open']
+            row['close'] < row['open'] and
+            row['supertrend'] == False
         ):
             position = "PE"
             entry_price = price
@@ -140,7 +164,6 @@ for i in range(1, len(df)):
         nifty_move = price - entry_price
         premium_move = nifty_move * 0.5
 
-        # TARGET
         if premium_move >= TARGET:
             pnl = TARGET * LOT_SIZE
             capital += TRADE_CAPITAL + pnl
@@ -150,7 +173,6 @@ for i in range(1, len(df)):
             daily_trades += 1
             position = None
 
-        # STOP LOSS
         elif premium_move <= -SL:
             pnl = -SL * LOT_SIZE
             capital += TRADE_CAPITAL + pnl
@@ -164,7 +186,7 @@ for i in range(1, len(df)):
 # =========================
 # RESULT
 # =========================
-print("\n📊 FINAL LOCKED STRATEGY BACKTEST\n")
+print("\n📊 STRATEGY WITH SUPERTREND\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
