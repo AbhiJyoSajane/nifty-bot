@@ -13,11 +13,16 @@ entry_price = 0
 
 def get_candles():
     try:
+        end = int(time.time())
+        start = end - (60 * 60 * 5)  # last 5 hours
+
         url = f"{BASE_URL}/v2/history/candles"
+
         params = {
             "symbol": SYMBOL,
-            "resolution": "5",
-            "limit": 100
+            "resolution": "5m",
+            "start": start,
+            "end": end
         }
 
         res = requests.get(url, params=params).json()
