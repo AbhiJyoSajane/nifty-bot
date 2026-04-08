@@ -21,7 +21,7 @@ LOT_SIZE = 65
 START_CAPITAL = 20000
 capital = START_CAPITAL
 
-PREMIUM_FACTOR = 0.5  # same as your previous stable version
+PREMIUM_FACTOR = 0.5
 
 # ================= FETCH DATA =================
 to_date = datetime.datetime.now()
@@ -125,9 +125,15 @@ for i in range(30, len(df)):
                 position = "BUY"
                 entry_price = price
 
+                sl_price = entry_price - (10 / PREMIUM_FACTOR)
+                target_price = entry_price + (20 / PREMIUM_FACTOR)
+
             elif price < row['ema'] and row['st'] == False:
                 position = "SELL"
                 entry_price = price
+
+                sl_price = entry_price + (10 / PREMIUM_FACTOR)
+                target_price = entry_price - (20 / PREMIUM_FACTOR)
 
     # ================= EXIT =================
     elif position:
@@ -152,23 +158,27 @@ for i in range(30, len(df)):
         # 🟢 TREND EXIT
         else:
 
-            if position == "BUY" and (price < row['ema'] or row['st'] == False):
-                pnl = premium_move * LOT_SIZE
-                capital += pnl
-                trades.append(pnl)
-                position = None
+            if position == "BUY":
 
-            elif position == "SELL" and (price > row['ema'] or row['st'] == True):
-                pnl = premium_move * LOT_SIZE
-                capital += pnl
-                trades.append(pnl)
-                position = None
+                if price <= sl_price or price >= target_price or price < row['ema'] or row['st'] == False:
+                    pnl = premium_move * LOT_SIZE
+                    capital += pnl
+                    trades.append(pnl)
+                    position = None
+
+            elif position == "SELL":
+
+                if price >= sl_price or price <= target_price or price > row['ema'] or row['st'] == True:
+                    pnl = premium_move * LOT_SIZE
+                    capital += pnl
+                    trades.append(pnl)
+                    position = None
 
 # ================= RESULT =================
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 FINAL ORB + EMA + SUPERTREND BACKTEST\n")
+print("\n📊 FINAL ORB + TREND (WITH SL/TP FIX)\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
