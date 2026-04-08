@@ -21,10 +21,7 @@ print("✅ Connected")
 # SETTINGS
 # =========================
 NIFTY = 256265
-
 LOT_SIZE = 65
-TARGET = 15
-SL = 10
 
 START_CAPITAL = 20000
 capital = START_CAPITAL
@@ -46,9 +43,10 @@ def in_time(dt):
     )
 
 # =========================
-# SUPERTREND FUNCTION
+# SUPERTREND FUNCTION (FIXED)
 # =========================
 def supertrend(df, period=10, multiplier=3):
+
     df['tr'] = df[['high','close']].max(axis=1) - df[['low','close']].min(axis=1)
     df['atr'] = df['tr'].rolling(period).mean()
 
@@ -60,11 +58,11 @@ def supertrend(df, period=10, multiplier=3):
 
     for i in range(1, len(df)):
         if df['close'][i] > df['upperband'][i-1]:
-            df['supertrend'][i] = True
+            df.loc[i, 'supertrend'] = True
         elif df['close'][i] < df['lowerband'][i-1]:
-            df['supertrend'][i] = False
+            df.loc[i, 'supertrend'] = False
         else:
-            df['supertrend'][i] = df['supertrend'][i-1]
+            df.loc[i, 'supertrend'] = df.loc[i-1, 'supertrend']
 
     return df
 
@@ -164,8 +162,21 @@ for i in range(1, len(df)):
         nifty_move = price - entry_price
         premium_move = nifty_move * 0.5
 
-        if premium_move >= TARGET:
-            pnl = TARGET * LOT_SIZE
+        # ================= DYNAMIC SL =================
+        if position == "CE":
+            sl_points = (price - row['lowerband']) * 0.5
+        else:
+            sl_points = (row['upperband'] - price) * 0.5
+
+        # fallback
+        if sl_points <= 0:
+            sl_points = 10
+
+        target_points = sl_points * 2
+
+        # 🎯 TARGET
+        if premium_move >= target_points:
+            pnl = target_points * LOT_SIZE
             capital += TRADE_CAPITAL + pnl
             total_pnl += pnl
             trades.append(pnl)
@@ -173,8 +184,9 @@ for i in range(1, len(df)):
             daily_trades += 1
             position = None
 
-        elif premium_move <= -SL:
-            pnl = -SL * LOT_SIZE
+        # 🛑 SL
+        elif premium_move <= -sl_points:
+            pnl = -sl_points * LOT_SIZE
             capital += TRADE_CAPITAL + pnl
             total_pnl += pnl
             trades.append(pnl)
@@ -186,7 +198,7 @@ for i in range(1, len(df)):
 # =========================
 # RESULT
 # =========================
-print("\n📊 STRATEGY WITH SUPERTREND\n")
+print("\n📊 SUPERTREND RR 1:2 STRATEGY\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
