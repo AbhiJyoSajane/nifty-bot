@@ -24,7 +24,14 @@ NIFTY = 256265
 TARGET = 30
 SL = 15
 OPTION_MULTIPLIER = 0.5
-LOT_SIZE = 65   # 🔥 updated
+LOT_SIZE = 65
+
+START_CAPITAL = 20000
+capital = START_CAPITAL
+
+# Assume avg premium
+AVG_PREMIUM = 120
+TRADE_CAPITAL = AVG_PREMIUM * LOT_SIZE  # ~₹7800
 
 # =========================
 # FETCH DATA
@@ -60,8 +67,10 @@ df['adx'] = abs(df['ema9'] - df['ema21'])
 # =========================
 position = None
 entry_price = 0
-total_pnl_points = 0
+
+total_pnl = 0
 trades = []
+skipped_trades = 0
 
 for i in range(1, len(df)):
 
@@ -71,13 +80,20 @@ for i in range(1, len(df)):
     # ENTRY
     if position is None:
 
+        # Check capital availability
+        if capital < TRADE_CAPITAL:
+            skipped_trades += 1
+            continue
+
         if row['ema9'] > row['ema21'] and price > row['ema200'] and row['adx'] > 10:
             position = "CE"
             entry_price = price
+            capital -= TRADE_CAPITAL  # block capital
 
         elif row['ema9'] < row['ema21'] and price < row['ema200'] and row['adx'] > 10:
             position = "PE"
             entry_price = price
+            capital -= TRADE_CAPITAL  # block capital
 
     # EXIT
     elif position:
@@ -86,28 +102,31 @@ for i in range(1, len(df)):
 
         # TARGET
         if move >= TARGET:
-            pnl = TARGET * OPTION_MULTIPLIER
-            total_pnl_points += pnl
+            pnl = TARGET * OPTION_MULTIPLIER * LOT_SIZE
+            capital += TRADE_CAPITAL + pnl
+            total_pnl += pnl
             trades.append(pnl)
             position = None
 
         # STOP LOSS
         elif move <= -SL:
-            pnl = -SL * OPTION_MULTIPLIER
-            total_pnl_points += pnl
+            pnl = -SL * OPTION_MULTIPLIER * LOT_SIZE
+            capital += TRADE_CAPITAL + pnl
+            total_pnl += pnl
             trades.append(pnl)
             position = None
 
 # =========================
 # RESULT
 # =========================
-total_pnl_rupees = total_pnl_points * LOT_SIZE
+print("\n📊 CAPITAL BASED BACKTEST\n")
 
-print("\n📊 OPTION BACKTEST (₹ RESULT)\n")
+print(f"Starting Capital: ₹{START_CAPITAL}")
+print(f"Ending Capital: ₹{round(capital,2)}")
+print(f"Total Profit/Loss: ₹{round(total_pnl,2)}")
 
-print(f"Total Trades: {len(trades)}")
-print(f"Total PnL (Points): {round(total_pnl_points,2)}")
-print(f"Total PnL (₹): {round(total_pnl_rupees,2)}")
+print(f"\nTotal Trades Taken: {len(trades)}")
+print(f"Skipped Trades (no capital): {skipped_trades}")
 
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
@@ -116,4 +135,5 @@ print(f"Winning Trades: {wins}")
 print(f"Losing Trades: {losses}")
 
 if len(trades) > 0:
-    print(f"Win Rate: {round((wins/len(trades))*100,2)}%")
+    win_rate = (wins / len(trades)) * 100
+    print(f"Win Rate: {round(win_rate,2)}%")
