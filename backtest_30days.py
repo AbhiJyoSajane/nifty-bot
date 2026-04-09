@@ -97,7 +97,7 @@ for i in range(30, len(df)):
     # ================= ENTRY =================
     if position is None and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES_PER_DAY:
 
-        # ===== FIRST ENTRY =====
+        # ===== FIRST ENTRY (STRICT) =====
         if last_direction is None:
 
             # BUY
@@ -124,11 +124,11 @@ for i in range(30, len(df)):
 
                 last_direction = "SELL"
 
-        # ===== RE-ENTRY (FIXED) =====
+        # ===== RE-ENTRY (RELAXED - NO CANDLE CONDITION) =====
         elif not reentry_used:
 
             # BUY re-entry
-            if last_direction == "BUY" and price > orb_high and prev['close'] > prev['open']:
+            if last_direction == "BUY" and price > orb_high:
 
                 position = "BUY"
                 entry_price = price
@@ -140,7 +140,7 @@ for i in range(30, len(df)):
                 reentry_used = True
 
             # SELL re-entry
-            elif last_direction == "SELL" and price < orb_low and prev['close'] < prev['open']:
+            elif last_direction == "SELL" and price < orb_low:
 
                 position = "SELL"
                 entry_price = price
@@ -179,7 +179,7 @@ for i in range(30, len(df)):
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 FINAL ORB (WITH FIXED RE-ENTRY)\n")
+print("\n📊 FINAL ORB (RELAXED RE-ENTRY)\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
