@@ -84,34 +84,33 @@ for i in range(30, len(df)):
     if orb_high is None or orb_low is None:
         continue
 
-    # ================= VOLUME (FIXED) =================
-    avg_vol = df['volume'].rolling(20).mean().iloc[i]
-    vol_ok = row['volume'] > avg_vol * 0.9   # relaxed
-
-    # ================= CONFIRMATION (PREV CANDLE) =================
-    bullish = prev['close'] > prev['open']
-    bearish = prev['close'] < prev['open']
-
-    # ================= ENTRY =================
-    if position is None and time >= datetime.time(9,50) and daily_pnl > MAX_DAILY_LOSS:
+    # ================= ENTRY (FINAL FIXED LOGIC) =================
+    if position is None and time >= datetime.time(9,46) and daily_pnl > MAX_DAILY_LOSS:
 
         # BUY (CE logic)
-        if price > orb_high and bullish and vol_ok:
-            position = "BUY"
-            entry_price = price
+        if price > orb_high:
 
-            sl_price = entry_price - (10 / PREMIUM_FACTOR)
-            target_price = entry_price + (20 / PREMIUM_FACTOR)
-            trail_price = sl_price
+            # previous candle confirmation
+            if prev['close'] > prev['open']:
+
+                position = "BUY"
+                entry_price = price
+
+                sl_price = entry_price - (10 / PREMIUM_FACTOR)
+                target_price = entry_price + (20 / PREMIUM_FACTOR)
+                trail_price = sl_price
 
         # SELL (PE logic)
-        elif price < orb_low and bearish and vol_ok:
-            position = "SELL"
-            entry_price = price
+        elif price < orb_low:
 
-            sl_price = entry_price + (10 / PREMIUM_FACTOR)
-            target_price = entry_price - (20 / PREMIUM_FACTOR)
-            trail_price = sl_price
+            if prev['close'] < prev['open']:
+
+                position = "SELL"
+                entry_price = price
+
+                sl_price = entry_price + (10 / PREMIUM_FACTOR)
+                target_price = entry_price - (20 / PREMIUM_FACTOR)
+                trail_price = sl_price
 
     # ================= EXIT =================
     elif position:
@@ -151,7 +150,7 @@ for i in range(30, len(df)):
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 FINAL ORB (FIXED BACKTEST)\n")
+print("\n📊 FINAL ORB BACKTEST (WORKING)\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
