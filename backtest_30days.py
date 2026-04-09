@@ -52,9 +52,6 @@ daily_pnl = 0
 current_day = None
 trade_count = 0
 
-last_direction = None
-reentry_used = False
-
 trades = []
 
 for i in range(30, len(df)):
@@ -74,8 +71,6 @@ for i in range(30, len(df)):
         orb_low = None
         position = None
         trade_count = 0
-        last_direction = None
-        reentry_used = False
 
     # ================= BUILD ORB =================
     if datetime.time(9,15) <= time <= datetime.time(9,45):
@@ -90,15 +85,18 @@ for i in range(30, len(df)):
     if orb_high is None or orb_low is None:
         continue
 
-    # ================= TIME FILTER =================
-    if time < datetime.time(9,46) or time > datetime.time(11,30):
+    # ================= TIME WINDOWS =================
+    in_morning = datetime.time(9,46) <= time <= datetime.time(11,30)
+    in_evening = datetime.time(14,30) <= time <= datetime.time(15,10)
+
+    if not (in_morning or in_evening):
         continue
 
     # ================= ENTRY =================
     if position is None and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES_PER_DAY:
 
-        # ===== FIRST ENTRY (STRICT) =====
-        if last_direction is None:
+        # ===== MORNING (normal breakout) =====
+        if in_morning:
 
             # BUY
             if price > orb_high and prev['close'] > prev['open']:
@@ -110,8 +108,6 @@ for i in range(30, len(df)):
                 risk = entry_price - sl_price
                 target_price = entry_price + (2 * risk)
 
-                last_direction = "BUY"
-
             # SELL
             elif price < orb_low and prev['close'] < prev['open']:
 
@@ -122,13 +118,11 @@ for i in range(30, len(df)):
                 risk = sl_price - entry_price
                 target_price = entry_price - (2 * risk)
 
-                last_direction = "SELL"
+        # ===== EVENING (slightly stricter) =====
+        elif in_evening:
 
-        # ===== RE-ENTRY (RELAXED - NO CANDLE CONDITION) =====
-        elif not reentry_used:
-
-            # BUY re-entry
-            if last_direction == "BUY" and price > orb_high:
+            # BUY
+            if price > orb_high + 2 and prev['close'] > prev['open']:
 
                 position = "BUY"
                 entry_price = price
@@ -137,10 +131,8 @@ for i in range(30, len(df)):
                 risk = entry_price - sl_price
                 target_price = entry_price + (2 * risk)
 
-                reentry_used = True
-
-            # SELL re-entry
-            elif last_direction == "SELL" and price < orb_low:
+            # SELL
+            elif price < orb_low - 2 and prev['close'] < prev['open']:
 
                 position = "SELL"
                 entry_price = price
@@ -148,8 +140,6 @@ for i in range(30, len(df)):
                 sl_price = prev['high']
                 risk = sl_price - entry_price
                 target_price = entry_price - (2 * risk)
-
-                reentry_used = True
 
     # ================= EXIT =================
     elif position:
@@ -179,7 +169,7 @@ for i in range(30, len(df)):
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 FINAL ORB (RELAXED RE-ENTRY)\n")
+print("\n📊 ORB (MORNING + EVENING WINDOWS)\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
