@@ -135,7 +135,7 @@ wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 total_pnl = round(capital - START_CAPITAL, 2)
 
-print("\n📊 FINAL PURE ORB (MORNING ONLY)\n")
+print("\n📊 ORIGINAL ORB BACKTEST\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
