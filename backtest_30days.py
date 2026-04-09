@@ -84,16 +84,16 @@ for i in range(30, len(df)):
     if orb_high is None or orb_low is None:
         continue
 
-    # ================= VOLUME =================
+    # ================= VOLUME (FIXED) =================
     avg_vol = df['volume'].rolling(20).mean().iloc[i]
-    vol_ok = row['volume'] > avg_vol
+    vol_ok = row['volume'] > avg_vol * 0.9   # relaxed
 
-    # ================= CANDLE =================
-    bullish = row['close'] > row['open']
-    bearish = row['close'] < row['open']
+    # ================= CONFIRMATION (PREV CANDLE) =================
+    bullish = prev['close'] > prev['open']
+    bearish = prev['close'] < prev['open']
 
     # ================= ENTRY =================
-    if position is None and time > datetime.time(9,45) and daily_pnl > MAX_DAILY_LOSS:
+    if position is None and time >= datetime.time(9,50) and daily_pnl > MAX_DAILY_LOSS:
 
         # BUY (CE logic)
         if price > orb_high and bullish and vol_ok:
@@ -151,7 +151,7 @@ for i in range(30, len(df)):
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 ORB UPGRADED (30 DAYS BACKTEST)\n")
+print("\n📊 FINAL ORB (FIXED BACKTEST)\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
