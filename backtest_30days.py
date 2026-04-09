@@ -98,7 +98,7 @@ for i in range(30, len(df)):
             position = "BUY"
             entry_price = price
 
-            sl_price = prev['low']   # candle low
+            sl_price = prev['low']
             risk = entry_price - sl_price
             target_price = entry_price + (2 * risk)
 
@@ -108,7 +108,7 @@ for i in range(30, len(df)):
             position = "SELL"
             entry_price = price
 
-            sl_price = prev['high']  # candle high
+            sl_price = prev['high']
             risk = sl_price - entry_price
             target_price = entry_price - (2 * risk)
 
@@ -119,13 +119,11 @@ for i in range(30, len(df)):
 
         exit_trade = False
 
-        # BUY EXIT
         if position == "BUY":
             if price <= sl_price or price >= target_price:
                 pnl = premium_move * LOT_SIZE
                 exit_trade = True
 
-        # SELL EXIT
         elif position == "SELL":
             if price >= sl_price or price <= target_price:
                 pnl = premium_move * LOT_SIZE
@@ -142,7 +140,7 @@ for i in range(30, len(df)):
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 ORB RR (CANDLE SL, 1:2 TARGET)\n")
+print("\n📊 FINAL ORB (LOCKED VERSION)\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
