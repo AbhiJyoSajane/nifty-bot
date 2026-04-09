@@ -73,8 +73,8 @@ for i in range(30, len(df)):
         position = None
         trade_count = 0
 
-    # ================= BUILD ORB =================
-    if datetime.time(9,15) <= time <= datetime.time(9,45):
+    # ================= BUILD ORB (15 MIN) =================
+    if datetime.time(9,15) <= time <= datetime.time(9,30):
 
         if orb_high is None:
             orb_high = row['high']
@@ -83,39 +83,44 @@ for i in range(30, len(df)):
             orb_high = max(orb_high, row['high'])
             orb_low = min(orb_low, row['low'])
 
-    # ================= SKIP IF ORB NOT READY =================
     if orb_high is None or orb_low is None:
         continue
 
-    # ================= ORB QUALITY FILTER =================
-    if (orb_high - orb_low) < 35:
+    # ================= ORB FILTER =================
+    if (orb_high - orb_low) < 25:
         continue
 
-    # ================= TIME FILTER (UPDATED) =================
-    if time < datetime.time(9,46) or time > datetime.time(13,30):
+    # ================= TIME FILTER =================
+    if time < datetime.time(9,35) or time > datetime.time(13,30):
         continue
+
+    # ================= DYNAMIC TARGET =================
+    if time <= datetime.time(11,30):
+        target_points = 20
+    else:
+        target_points = 15
 
     # ================= ENTRY =================
     if position is None and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES_PER_DAY:
 
         # BUY
-        if price > orb_high + 2 and prev['close'] > prev['open']:
+        if price > orb_high + 3 and prev['close'] > prev['open']:
 
             position = "BUY"
             entry_price = price
 
             sl_price = entry_price - (10 / PREMIUM_FACTOR)
-            target_price = entry_price + (20 / PREMIUM_FACTOR)
+            target_price = entry_price + (target_points / PREMIUM_FACTOR)
             trail_price = sl_price
 
         # SELL
-        elif price < orb_low - 2 and prev['close'] < prev['open']:
+        elif price < orb_low - 3 and prev['close'] < prev['open']:
 
             position = "SELL"
             entry_price = price
 
             sl_price = entry_price + (10 / PREMIUM_FACTOR)
-            target_price = entry_price - (20 / PREMIUM_FACTOR)
+            target_price = entry_price - (target_points / PREMIUM_FACTOR)
             trail_price = sl_price
 
     # ================= EXIT =================
@@ -134,13 +139,11 @@ for i in range(30, len(df)):
 
         exit_trade = False
 
-        # BUY EXIT
         if position == "BUY":
             if price <= trail_price or price >= target_price:
                 pnl = premium_move * LOT_SIZE
                 exit_trade = True
 
-        # SELL EXIT
         elif position == "SELL":
             if price >= trail_price or price <= target_price:
                 pnl = premium_move * LOT_SIZE
@@ -157,7 +160,7 @@ for i in range(30, len(df)):
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 ORB (9:46–1:30) BACKTEST\n")
+print("\n📊 ORB 15MIN + HYBRID TARGET BACKTEST\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
