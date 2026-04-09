@@ -53,8 +53,7 @@ current_day = None
 trade_count = 0
 
 # 🔥 Evening control
-evening_trade_count = 0
-evening_last_result = None  # "SL" or "TARGET"
+evening_trade_taken = False
 
 trades = []
 
@@ -75,8 +74,7 @@ for i in range(30, len(df)):
         orb_low = None
         position = None
         trade_count = 0
-        evening_trade_count = 0
-        evening_last_result = None
+        evening_trade_taken = False
 
     # ================= BUILD ORB =================
     if datetime.time(9,15) <= time <= datetime.time(9,45):
@@ -98,7 +96,7 @@ for i in range(30, len(df)):
     # ================= ENTRY =================
     if position is None and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES_PER_DAY:
 
-        # 🔵 MORNING
+        # 🔵 MORNING TRADES
         if in_morning:
 
             if price > orb_high and prev['close'] > prev['open']:
@@ -117,63 +115,44 @@ for i in range(30, len(df)):
                 risk = sl_price - entry_price
                 target_price = entry_price - (2 * risk)
 
-        # 🟠 EVENING CONTROLLED
-        elif in_evening:
+        # 🟠 EVENING (ONLY 1 TRADE)
+        elif in_evening and not evening_trade_taken:
 
-            allow_trade = False
+            if price > orb_high + 2 and prev['close'] > prev['open']:
 
-            # First trade
-            if evening_trade_count == 0:
-                allow_trade = True
+                position = "BUY"
+                entry_price = price
+                sl_price = prev['low']
+                risk = entry_price - sl_price
+                target_price = entry_price + (2 * risk)
 
-            # Second trade only if first was SL
-            elif evening_trade_count == 1 and evening_last_result == "SL":
-                allow_trade = True
+                evening_trade_taken = True
 
-            if allow_trade:
+            elif price < orb_low - 2 and prev['close'] < prev['open']:
 
-                if price > orb_high + 2 and prev['close'] > prev['open']:
+                position = "SELL"
+                entry_price = price
+                sl_price = prev['high']
+                risk = sl_price - entry_price
+                target_price = entry_price - (2 * risk)
 
-                    position = "BUY"
-                    entry_price = price
-                    sl_price = prev['low']
-                    risk = entry_price - sl_price
-                    target_price = entry_price + (2 * risk)
-
-                elif price < orb_low - 2 and prev['close'] < prev['open']:
-
-                    position = "SELL"
-                    entry_price = price
-                    sl_price = prev['high']
-                    risk = sl_price - entry_price
-                    target_price = entry_price - (2 * risk)
+                evening_trade_taken = True
 
     # ================= EXIT =================
     elif position:
 
         premium_move = (price - entry_price) * PREMIUM_FACTOR
         exit_trade = False
-        result = None
 
         if position == "BUY":
-            if price <= sl_price:
+            if price <= sl_price or price >= target_price:
                 pnl = premium_move * LOT_SIZE
                 exit_trade = True
-                result = "SL"
-            elif price >= target_price:
-                pnl = premium_move * LOT_SIZE
-                exit_trade = True
-                result = "TARGET"
 
         elif position == "SELL":
-            if price >= sl_price:
+            if price >= sl_price or price <= target_price:
                 pnl = premium_move * LOT_SIZE
                 exit_trade = True
-                result = "SL"
-            elif price <= target_price:
-                pnl = premium_move * LOT_SIZE
-                exit_trade = True
-                result = "TARGET"
 
         if exit_trade:
             capital += pnl
@@ -182,16 +161,11 @@ for i in range(30, len(df)):
             position = None
             trade_count += 1
 
-            # 🔥 Track evening result
-            if in_evening:
-                evening_trade_count += 1
-                evening_last_result = result
-
 # ================= RESULT =================
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 FINAL ORB (CONTROLLED EVENING)\n")
+print("\n📊 FINAL ORB (MORNING + 1 EVENING TRADE)\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
