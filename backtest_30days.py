@@ -15,75 +15,93 @@ kite.set_access_token(data["access_token"])
 print("✅ Connected")
 
 # ================= SETTINGS =================
-NIFTY = 256265
-LOT_SIZE = 65
-
+LOT_SIZE = 50
 START_CAPITAL = 20000
 capital = START_CAPITAL
 
 MAX_DAILY_LOSS = -2000
-MAX_TRADES_PER_DAY = 2
-PREMIUM_FACTOR = 0.5
+MAX_TRADES = 3
 
-buffer = 5
+# ================= LOAD INSTRUMENTS =================
+inst = pd.DataFrame(kite.instruments("NFO"))
+inst['expiry'] = pd.to_datetime(inst['expiry'])
 
-# ================= DATE =================
+def get_atm(price):
+    return round(price / 50) * 50
+
+def get_expiry(date):
+    return inst[(inst['name']=="NIFTY") & (inst['expiry']>=pd.to_datetime(date))]['expiry'].min()
+
+def get_token(strike, expiry, opt_type):
+    row = inst[
+        (inst['name']=="NIFTY") &
+        (inst['strike']==strike) &
+        (inst['expiry']==expiry) &
+        (inst['instrument_type']==opt_type)
+    ]
+    if not row.empty:
+        return int(row.iloc[0]['instrument_token'])
+    return None
+
+# ================= FETCH SPOT =================
+NIFTY = 256265
 from_date = datetime.datetime(2026,1,1)
 to_date = datetime.datetime(2026,1,31)
 
-# ================= FETCH =================
-data = kite.historical_data(
-    instrument_token=NIFTY,
-    from_date=from_date,
-    to_date=to_date,
-    interval="5minute"
-)
+spot = kite.historical_data(NIFTY, from_date, to_date, "5minute")
+spot_df = pd.DataFrame(spot)
+spot_df.columns = [c.lower() for c in spot_df.columns]
 
-df = pd.DataFrame(data)
-df.columns = [col.lower() for col in df.columns]
+# ================= OPTION CACHE =================
+option_cache = {}
 
-# ================= VWAP =================
-df['cum_vol'] = df['volume'].cumsum()
-df['cum_vol_price'] = (df['close'] * df['volume']).cumsum()
-df['vwap'] = df['cum_vol_price'] / df['cum_vol']
+def load_option(token):
+    if token not in option_cache:
+        data = kite.historical_data(token, from_date, to_date, "5minute")
+        df = pd.DataFrame(data)
+        df.columns = [c.lower() for c in df.columns]
+        df.set_index('date', inplace=True)
+        option_cache[token] = df
+    return option_cache[token]
 
 # ================= VARIABLES =================
-position = None
-entry_price = 0
-sl_price = 0
-target_price = 0
-
 orb_high = None
 orb_low = None
 
+position = None
+entry_price = 0
+opt_df = None
+
+spot_sl = None  # 🔥 candle SL based on spot
+
 daily_pnl = 0
-current_day = None
 trade_count = 0
+current_day = None
 
 trades = []
 
 # ================= LOOP =================
-for i in range(30, len(df)):
+for i in range(30, len(spot_df)):
 
-    row = df.iloc[i]
-    prev = df.iloc[i-1]
+    row = spot_df.iloc[i]
+    prev = spot_df.iloc[i-1]
 
     price = row['close']
-    vwap = row['vwap']
-    time = row['date'].time()
-    date = row['date'].date()
+    time = row['date']
+    t = time.time()
+    date = time.date()
 
-    # RESET
+    # RESET DAILY
     if current_day != date:
         current_day = date
-        daily_pnl = 0
         orb_high = None
         orb_low = None
         position = None
         trade_count = 0
+        daily_pnl = 0
 
     # BUILD ORB
-    if datetime.time(9,15) <= time <= datetime.time(9,45):
+    if datetime.time(9,15) <= t <= datetime.time(9,45):
         if orb_high is None:
             orb_high = row['high']
             orb_low = row['low']
@@ -94,75 +112,81 @@ for i in range(30, len(df)):
     if orb_high is None:
         continue
 
-    # ENTRY
-    if position is None and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES_PER_DAY:
+    # ================= ENTRY =================
+    if position is None and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES:
 
-        if datetime.time(9,46) <= time <= datetime.time(11,30):
+        if datetime.time(9,46) <= t <= datetime.time(11,30):
 
-            candle_body = abs(prev['close'] - prev['open'])
-            candle_range = prev['high'] - prev['low']
+            expiry = get_expiry(date)
+            atm = get_atm(price)
 
-            strong_candle = candle_body > (0.5 * candle_range)
+            # BUY CE
+            if price > orb_high and prev['close'] > prev['open']:
 
-            # BUY
-            if (price > orb_high + buffer and 
-                strong_candle and 
-                price > vwap):
+                token = get_token(atm, expiry, "CE")
+                if token:
+                    opt_df = load_option(token)
 
-                position = "BUY"
-                entry_price = price
-                sl_price = prev['low']
-                risk = entry_price - sl_price
-                target_price = entry_price + (2 * risk)
+                    if time in opt_df.index:
+                        premium = opt_df.loc[time]['close']
 
-            # SELL
-            elif (price < orb_low - buffer and 
-                  strong_candle and 
-                  price < vwap):
+                        position = "CE"
+                        entry_price = premium
+                        spot_sl = prev['low']   # 🔥 candle SL
 
-                position = "SELL"
-                entry_price = price
-                sl_price = prev['high']
-                risk = sl_price - entry_price
-                target_price = entry_price - (2 * risk)
+            # BUY PE
+            elif price < orb_low and prev['close'] < prev['open']:
 
-    # EXIT
-    elif position:
+                token = get_token(atm, expiry, "PE")
+                if token:
+                    opt_df = load_option(token)
 
-        premium_move = (price - entry_price) * PREMIUM_FACTOR
-        exit_trade = False
+                    if time in opt_df.index:
+                        premium = opt_df.loc[time]['close']
 
-        if position == "BUY":
-            if price <= sl_price or price >= target_price:
-                pnl = premium_move * LOT_SIZE
+                        position = "PE"
+                        entry_price = premium
+                        spot_sl = prev['high']  # 🔥 candle SL
+
+    # ================= EXIT =================
+    elif position and opt_df is not None:
+
+        if time in opt_df.index:
+            premium = opt_df.loc[time]['close']
+
+            exit_trade = False
+
+            # 🔥 SPOT BASED SL
+            if position == "CE" and price <= spot_sl:
                 exit_trade = True
 
-        elif position == "SELL":
-            if price >= sl_price or price <= target_price:
-                pnl = premium_move * LOT_SIZE
+            elif position == "PE" and price >= spot_sl:
                 exit_trade = True
 
-        if exit_trade:
-            capital += pnl
-            daily_pnl += pnl
-            trades.append(pnl)
-            position = None
-            trade_count += 1
+            # 🔼 TRAILING (OPTION BASED)
+            move = premium - entry_price
+
+            if move > 20:
+                spot_sl = entry_price  # breakeven shift
+
+            # EXIT
+            if exit_trade:
+                pnl = (premium - entry_price) * LOT_SIZE
+                capital += pnl
+                daily_pnl += pnl
+                trades.append(pnl)
+                position = None
+                trade_count += 1
 
 # ================= RESULT =================
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
-total_pnl = round(capital - START_CAPITAL, 2)
 
-print("\n📊 ROBUST ORB BACKTEST\n")
-
+print("\n📊 FINAL OPTION ORB (CANDLE SL + DAILY SL)\n")
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
-print(f"Total PnL: ₹{total_pnl}")
+print(f"Total PnL: ₹{round(capital - START_CAPITAL,2)}")
 
-print(f"\nTotal Trades: {len(trades)}")
-print(f"Winning Trades: {wins}")
-print(f"Losing Trades: {losses}")
-
-if len(trades) > 0:
+print(f"\nTrades: {len(trades)} | Wins: {wins} | Losses: {losses}")
+if trades:
     print(f"Win Rate: {round((wins/len(trades))*100,2)}%")
