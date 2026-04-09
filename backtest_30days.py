@@ -91,12 +91,12 @@ for i in range(30, len(df)):
     if (orb_high - orb_low) < 35:
         continue
 
-    # ================= TIME FILTER =================
-    if time > datetime.time(14,30):
+    # ================= TIME FILTER (UPDATED) =================
+    if time < datetime.time(9,46) or time > datetime.time(13,30):
         continue
 
     # ================= ENTRY =================
-    if position is None and time >= datetime.time(9,46) and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES_PER_DAY:
+    if position is None and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES_PER_DAY:
 
         # BUY
         if price > orb_high + 2 and prev['close'] > prev['open']:
@@ -105,7 +105,7 @@ for i in range(30, len(df)):
             entry_price = price
 
             sl_price = entry_price - (10 / PREMIUM_FACTOR)
-            target_price = entry_price + (30 / PREMIUM_FACTOR)   # 🔥 max target
+            target_price = entry_price + (20 / PREMIUM_FACTOR)
             trail_price = sl_price
 
         # SELL
@@ -115,7 +115,7 @@ for i in range(30, len(df)):
             entry_price = price
 
             sl_price = entry_price + (10 / PREMIUM_FACTOR)
-            target_price = entry_price - (30 / PREMIUM_FACTOR)   # 🔥 max target
+            target_price = entry_price - (20 / PREMIUM_FACTOR)
             trail_price = sl_price
 
     # ================= EXIT =================
@@ -123,14 +123,14 @@ for i in range(30, len(df)):
 
         premium_move = (price - entry_price) * PREMIUM_FACTOR
 
-        # ===== MAX PROFIT TRAILING =====
+        # TRAILING
         if position == "BUY":
-            if price > entry_price + (15 / PREMIUM_FACTOR):
-                trail_price = max(trail_price, price - (7 / PREMIUM_FACTOR))
+            if price > entry_price + (10 / PREMIUM_FACTOR):
+                trail_price = max(trail_price, price - (5 / PREMIUM_FACTOR))
 
         elif position == "SELL":
-            if price < entry_price - (15 / PREMIUM_FACTOR):
-                trail_price = min(trail_price, price + (7 / PREMIUM_FACTOR))
+            if price < entry_price - (10 / PREMIUM_FACTOR):
+                trail_price = min(trail_price, price + (5 / PREMIUM_FACTOR))
 
         exit_trade = False
 
@@ -157,7 +157,7 @@ for i in range(30, len(df)):
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 FINAL MAX PROFIT ORB BACKTEST\n")
+print("\n📊 ORB (9:46–1:30) BACKTEST\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
