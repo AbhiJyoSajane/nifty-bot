@@ -39,20 +39,11 @@ data = kite.historical_data(
 df = pd.DataFrame(data)
 df.columns = [col.lower() for col in df.columns]
 
-# ================= VWAP (DAILY RESET) =================
-df['date_only'] = df['date'].dt.date
-
-df['vwap'] = (
-    (df['close'] * df['volume'])
-    .groupby(df['date_only']).cumsum()
-    /
-    df['volume'].groupby(df['date_only']).cumsum()
-)
-
 # ================= BACKTEST =================
 position = None
 entry_price = 0
-trail_price = 0
+sl_price = 0
+target_price = 0
 
 orb_high = None
 orb_low = None
@@ -94,91 +85,49 @@ for i in range(30, len(df)):
     if orb_high is None or orb_low is None:
         continue
 
-    # ================= ORB FILTER =================
-    if (orb_high - orb_low) < 35:
+    # ================= TIME FILTER =================
+    if time < datetime.time(9,46) or time > datetime.time(11,30):
         continue
 
-    # ================= HYBRID TARGET =================
-    if time <= datetime.time(11,30):
-        target_points = 20
-    else:
-        target_points = 15
-
-    # ======================================================
-    # 🔵 ORB STRATEGY (9:46 → 11:30)
-    # ======================================================
-    if (datetime.time(9,46) <= time <= datetime.time(11,30)
-        and position is None
-        and daily_pnl > MAX_DAILY_LOSS
-        and trade_count < MAX_TRADES_PER_DAY):
+    # ================= ENTRY =================
+    if position is None and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES_PER_DAY:
 
         # BUY
-        if price > orb_high + 2 and prev['close'] > prev['open']:
+        if price > orb_high and prev['close'] > prev['open']:
 
             position = "BUY"
             entry_price = price
-            sl = entry_price - (10 / PREMIUM_FACTOR)
-            target = entry_price + (target_points / PREMIUM_FACTOR)
-            trail_price = sl
+
+            sl_price = prev['low']   # candle low
+            risk = entry_price - sl_price
+            target_price = entry_price + (2 * risk)
 
         # SELL
-        elif price < orb_low - 2 and prev['close'] < prev['open']:
+        elif price < orb_low and prev['close'] < prev['open']:
 
             position = "SELL"
             entry_price = price
-            sl = entry_price + (10 / PREMIUM_FACTOR)
-            target = entry_price - (target_points / PREMIUM_FACTOR)
-            trail_price = sl
 
-    # ======================================================
-    # 🟢 VWAP STRATEGY (11:00 → 1:30)
-    # ======================================================
-    elif (datetime.time(11,0) <= time <= datetime.time(13,30)
-          and position is None
-          and daily_pnl > MAX_DAILY_LOSS
-          and trade_count < MAX_TRADES_PER_DAY):
-
-        # BUY
-        if price > row['vwap'] and price > prev['high'] and prev['close'] > prev['open']:
-
-            position = "BUY"
-            entry_price = price
-            sl = entry_price - (10 / PREMIUM_FACTOR)
-            target = entry_price + (target_points / PREMIUM_FACTOR)
-            trail_price = sl
-
-        # SELL
-        elif price < row['vwap'] and price < prev['low'] and prev['close'] < prev['open']:
-
-            position = "SELL"
-            entry_price = price
-            sl = entry_price + (10 / PREMIUM_FACTOR)
-            target = entry_price - (target_points / PREMIUM_FACTOR)
-            trail_price = sl
+            sl_price = prev['high']  # candle high
+            risk = sl_price - entry_price
+            target_price = entry_price - (2 * risk)
 
     # ================= EXIT =================
     elif position:
 
         premium_move = (price - entry_price) * PREMIUM_FACTOR
 
-        # TRAILING
-        if position == "BUY":
-            if price > entry_price + (10 / PREMIUM_FACTOR):
-                trail_price = max(trail_price, price - (5 / PREMIUM_FACTOR))
-
-        elif position == "SELL":
-            if price < entry_price - (10 / PREMIUM_FACTOR):
-                trail_price = min(trail_price, price + (5 / PREMIUM_FACTOR))
-
         exit_trade = False
 
+        # BUY EXIT
         if position == "BUY":
-            if price <= trail_price or price >= target:
+            if price <= sl_price or price >= target_price:
                 pnl = premium_move * LOT_SIZE
                 exit_trade = True
 
+        # SELL EXIT
         elif position == "SELL":
-            if price >= trail_price or price <= target:
+            if price >= sl_price or price <= target_price:
                 pnl = premium_move * LOT_SIZE
                 exit_trade = True
 
@@ -193,7 +142,7 @@ for i in range(30, len(df)):
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 DUAL STRATEGY (ORB + VWAP)\n")
+print("\n📊 ORB RR (CANDLE SL, 1:2 TARGET)\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
