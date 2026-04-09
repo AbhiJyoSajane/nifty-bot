@@ -21,15 +21,17 @@ LOT_SIZE = 65
 START_CAPITAL = 20000
 capital = START_CAPITAL
 
-PREMIUM_FACTOR = 0.5
 MAX_DAILY_LOSS = -2000
-MAX_TRADES_PER_DAY = 3
+MAX_TRADES_PER_DAY = 2
+PREMIUM_FACTOR = 0.5
 
-# ================= DATE RANGE =================
+buffer = 5
+
+# ================= DATE =================
 from_date = datetime.datetime(2026,1,1)
 to_date = datetime.datetime(2026,1,31)
 
-# ================= FETCH DATA =================
+# ================= FETCH =================
 data = kite.historical_data(
     instrument_token=NIFTY,
     from_date=from_date,
@@ -39,6 +41,11 @@ data = kite.historical_data(
 
 df = pd.DataFrame(data)
 df.columns = [col.lower() for col in df.columns]
+
+# ================= VWAP =================
+df['cum_vol'] = df['volume'].cumsum()
+df['cum_vol_price'] = (df['close'] * df['volume']).cumsum()
+df['vwap'] = df['cum_vol_price'] / df['cum_vol']
 
 # ================= VARIABLES =================
 position = None
@@ -62,10 +69,11 @@ for i in range(30, len(df)):
     prev = df.iloc[i-1]
 
     price = row['close']
+    vwap = row['vwap']
     time = row['date'].time()
     date = row['date'].date()
 
-    # RESET DAILY
+    # RESET
     if current_day != date:
         current_day = date
         daily_pnl = 0
@@ -74,7 +82,7 @@ for i in range(30, len(df)):
         position = None
         trade_count = 0
 
-    # ================= BUILD ORB =================
+    # BUILD ORB
     if datetime.time(9,15) <= time <= datetime.time(9,45):
         if orb_high is None:
             orb_high = row['high']
@@ -86,13 +94,21 @@ for i in range(30, len(df)):
     if orb_high is None:
         continue
 
-    # ================= ENTRY =================
+    # ENTRY
     if position is None and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES_PER_DAY:
 
         if datetime.time(9,46) <= time <= datetime.time(11,30):
 
+            candle_body = abs(prev['close'] - prev['open'])
+            candle_range = prev['high'] - prev['low']
+
+            strong_candle = candle_body > (0.5 * candle_range)
+
             # BUY
-            if price > orb_high and prev['close'] > prev['open']:
+            if (price > orb_high + buffer and 
+                strong_candle and 
+                price > vwap):
+
                 position = "BUY"
                 entry_price = price
                 sl_price = prev['low']
@@ -100,14 +116,17 @@ for i in range(30, len(df)):
                 target_price = entry_price + (2 * risk)
 
             # SELL
-            elif price < orb_low and prev['close'] < prev['open']:
+            elif (price < orb_low - buffer and 
+                  strong_candle and 
+                  price < vwap):
+
                 position = "SELL"
                 entry_price = price
                 sl_price = prev['high']
                 risk = sl_price - entry_price
                 target_price = entry_price - (2 * risk)
 
-    # ================= EXIT =================
+    # EXIT
     elif position:
 
         premium_move = (price - entry_price) * PREMIUM_FACTOR
@@ -135,7 +154,7 @@ wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 total_pnl = round(capital - START_CAPITAL, 2)
 
-print("\n📊 ORIGINAL ORB BACKTEST\n")
+print("\n📊 ROBUST ORB BACKTEST\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
