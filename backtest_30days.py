@@ -123,7 +123,7 @@ for i in range(30, len(df)):
         # ===== EVENING CRB =====
         elif datetime.time(15,0) <= time <= datetime.time(15,20) and not crb_trade_taken:
 
-            buffer = 3  # avoid fake breakouts
+            buffer = 3
 
             if crb_high and price > crb_high + buffer and prev['close'] > prev['open']:
                 position = "BUY"
@@ -167,12 +167,13 @@ for i in range(30, len(df)):
 # ================= RESULT =================
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
+total_pnl = round(capital - START_CAPITAL, 2)
 
 print("\n📊 FINAL ORB + CRB (SAFE DUAL STRATEGY)\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
-print(f"Total PnL: ₹{round(capital - START_CAPITAL,2)}")
+print(f"Total PnL: ₹{total_pnl}")
 
 print(f"\nTotal Trades: {len(trades)}")
 print(f"Winning Trades: {wins}")
