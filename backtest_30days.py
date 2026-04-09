@@ -105,7 +105,7 @@ for i in range(30, len(df)):
             entry_price = price
 
             sl_price = entry_price - (10 / PREMIUM_FACTOR)
-            target_price = entry_price + (25 / PREMIUM_FACTOR)   # 🔥 increased target
+            target_price = entry_price + (30 / PREMIUM_FACTOR)   # 🔥 max target
             trail_price = sl_price
 
         # SELL
@@ -115,7 +115,7 @@ for i in range(30, len(df)):
             entry_price = price
 
             sl_price = entry_price + (10 / PREMIUM_FACTOR)
-            target_price = entry_price - (25 / PREMIUM_FACTOR)   # 🔥 increased target
+            target_price = entry_price - (30 / PREMIUM_FACTOR)   # 🔥 max target
             trail_price = sl_price
 
     # ================= EXIT =================
@@ -123,14 +123,14 @@ for i in range(30, len(df)):
 
         premium_move = (price - entry_price) * PREMIUM_FACTOR
 
-        # ===== IMPROVED TRAILING =====
+        # ===== MAX PROFIT TRAILING =====
         if position == "BUY":
-            if price > entry_price + (12 / PREMIUM_FACTOR):   # 🔥 delayed trailing
-                trail_price = max(trail_price, price - (5 / PREMIUM_FACTOR))
+            if price > entry_price + (15 / PREMIUM_FACTOR):
+                trail_price = max(trail_price, price - (7 / PREMIUM_FACTOR))
 
         elif position == "SELL":
-            if price < entry_price - (12 / PREMIUM_FACTOR):
-                trail_price = min(trail_price, price + (5 / PREMIUM_FACTOR))
+            if price < entry_price - (15 / PREMIUM_FACTOR):
+                trail_price = min(trail_price, price + (7 / PREMIUM_FACTOR))
 
         exit_trade = False
 
@@ -157,7 +157,7 @@ for i in range(30, len(df)):
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 FINAL PROFIT BOOSTED ORB BACKTEST\n")
+print("\n📊 FINAL MAX PROFIT ORB BACKTEST\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
