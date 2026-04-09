@@ -23,6 +23,7 @@ capital = START_CAPITAL
 
 PREMIUM_FACTOR = 0.5
 MAX_DAILY_LOSS = -2000
+MAX_TRADES_PER_DAY = 2
 
 # ================= FETCH DATA =================
 to_date = datetime.datetime.now()
@@ -50,6 +51,7 @@ orb_low = None
 
 daily_pnl = 0
 current_day = None
+trade_count = 0
 
 trades = []
 
@@ -69,6 +71,7 @@ for i in range(30, len(df)):
         orb_high = None
         orb_low = None
         position = None
+        trade_count = 0
 
     # ================= BUILD ORB =================
     if datetime.time(9,15) <= time <= datetime.time(9,45):
@@ -84,47 +87,50 @@ for i in range(30, len(df)):
     if orb_high is None or orb_low is None:
         continue
 
-    # ================= ENTRY (FINAL FIXED LOGIC) =================
-    if position is None and time >= datetime.time(9,46) and daily_pnl > MAX_DAILY_LOSS:
+    # ================= ORB FILTER =================
+    if (orb_high - orb_low) < 40:
+        continue
 
-        # BUY (CE logic)
-        if price > orb_high:
+    # ================= TIME FILTER =================
+    if time > datetime.time(13,30):
+        continue
 
-            # previous candle confirmation
-            if prev['close'] > prev['open']:
+    # ================= ENTRY =================
+    if position is None and time >= datetime.time(9,46) and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES_PER_DAY:
 
-                position = "BUY"
-                entry_price = price
+        # BUY
+        if price > orb_high + 5 and prev['close'] > prev['open']:
 
-                sl_price = entry_price - (10 / PREMIUM_FACTOR)
-                target_price = entry_price + (20 / PREMIUM_FACTOR)
-                trail_price = sl_price
+            position = "BUY"
+            entry_price = price
 
-        # SELL (PE logic)
-        elif price < orb_low:
+            sl_price = entry_price - (10 / PREMIUM_FACTOR)
+            target_price = entry_price + (20 / PREMIUM_FACTOR)
+            trail_price = sl_price
 
-            if prev['close'] < prev['open']:
+        # SELL
+        elif price < orb_low - 5 and prev['close'] < prev['open']:
 
-                position = "SELL"
-                entry_price = price
+            position = "SELL"
+            entry_price = price
 
-                sl_price = entry_price + (10 / PREMIUM_FACTOR)
-                target_price = entry_price - (20 / PREMIUM_FACTOR)
-                trail_price = sl_price
+            sl_price = entry_price + (10 / PREMIUM_FACTOR)
+            target_price = entry_price - (20 / PREMIUM_FACTOR)
+            trail_price = sl_price
 
     # ================= EXIT =================
     elif position:
 
         premium_move = (price - entry_price) * PREMIUM_FACTOR
 
-        # TRAILING LOGIC
+        # ===== SMART TRAILING =====
         if position == "BUY":
-            if price > entry_price + (10 / PREMIUM_FACTOR):
-                trail_price = max(trail_price, price - (10 / PREMIUM_FACTOR))
+            if price > entry_price + (15 / PREMIUM_FACTOR):
+                trail_price = max(trail_price, price - (5 / PREMIUM_FACTOR))
 
         elif position == "SELL":
-            if price < entry_price - (10 / PREMIUM_FACTOR):
-                trail_price = min(trail_price, price + (10 / PREMIUM_FACTOR))
+            if price < entry_price - (15 / PREMIUM_FACTOR):
+                trail_price = min(trail_price, price + (5 / PREMIUM_FACTOR))
 
         exit_trade = False
 
@@ -145,12 +151,13 @@ for i in range(30, len(df)):
             daily_pnl += pnl
             trades.append(pnl)
             position = None
+            trade_count += 1
 
 # ================= RESULT =================
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 FINAL ORB BACKTEST (WORKING)\n")
+print("\n📊 FINAL OPTIMIZED ORB BACKTEST\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
