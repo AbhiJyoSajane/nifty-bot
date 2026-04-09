@@ -1,171 +1,190 @@
 from kiteconnect import KiteConnect
 import pandas as pd
-import datetime
-import os
+import datetime as dt
+import time
 
-# ================= CONFIG =================
-api_key = os.environ.get("API_KEY")
-api_secret = os.environ.get("API_SECRET")
-request_token = os.environ.get("REQUEST_TOKEN")
+# ---------------- CONFIG ---------------- #
+API_KEY = "your_api_key"
+ACCESS_TOKEN = "your_access_token"
 
-kite = KiteConnect(api_key=api_key)
-data = kite.generate_session(request_token, api_secret=api_secret)
-kite.set_access_token(data["access_token"])
+CAPITAL = 20000
+MAX_DAILY_LOSS = -2000
+LOT_SIZE = 50
+RISK_PER_TRADE = 500   # optional safety
 
-print("✅ Connected")
+kite = KiteConnect(api_key=API_KEY)
+kite.set_access_token(ACCESS_TOKEN)
 
-# ================= SETTINGS =================
-NIFTY = 256265
-LOT_SIZE = 65
-START_CAPITAL = 20000
-capital = START_CAPITAL
-
-PREMIUM_FACTOR = 0.5
-
-# ================= FETCH DATA =================
-to_date = datetime.datetime.now()
-from_date = to_date - datetime.timedelta(days=30)
-
-data = kite.historical_data(
-    instrument_token=NIFTY,
-    from_date=from_date,
-    to_date=to_date,
-    interval="5minute"
-)
-
-df = pd.DataFrame(data)
-df.columns = [col.lower() for col in df.columns]
-
-# ================= BACKTEST =================
+# ---------------- GLOBAL ---------------- #
+daily_pnl = 0
 position = None
-entry_price = 0
-sl_price = 0
-target_price = 0
 
-orb_high = None
-orb_low = None
 
-confirm_high = None
-confirm_low = None
-confirm_bull = False
-confirm_bear = False
+# ---------------- GET NIFTY DATA ---------------- #
+def get_nifty_data():
+    instrument_token = 256265
+    data = kite.historical_data(
+        instrument_token,
+        dt.datetime.now().replace(hour=9, minute=15),
+        dt.datetime.now(),
+        "5minute"
+    )
+    df = pd.DataFrame(data)
+    df['date'] = pd.to_datetime(df['date'])
+    return df
 
-trades = []
 
-for i in range(30, len(df)):
+# ---------------- ATM STRIKE ---------------- #
+def get_atm_strike(price):
+    return round(price / 50) * 50
 
-    row = df.iloc[i]
-    prev = df.iloc[i-1]
 
-    price = row['close']
-    time = row['date'].time()
+# ---------------- AUTO EXPIRY (SIMPLE) ---------------- #
+def get_expiry():
+    today = dt.date.today()
+    next_thursday = today + dt.timedelta((3 - today.weekday()) % 7)
+    return next_thursday.strftime("%d%b").upper()
 
-    # ================= RESET DAILY =================
-    if time >= datetime.time(9,15) and time < datetime.time(9,20):
-        orb_high = None
-        orb_low = None
-        confirm_high = None
-        confirm_low = None
-        position = None
 
-    # ================= BUILD ORB =================
-    if datetime.time(9,15) <= time <= datetime.time(9,30):
+# ---------------- OPTION SYMBOL ---------------- #
+def get_option_symbol(strike, option_type):
+    expiry = get_expiry()
+    return f"NFO:NIFTY{expiry}{strike}{option_type}"
 
-        if orb_high is None:
-            orb_high = row['high']
-            orb_low = row['low']
-        else:
-            orb_high = max(orb_high, row['high'])
-            orb_low = min(orb_low, row['low'])
 
-    # ================= CONFIRMATION CANDLE (9:30–9:35) =================
-    if time == datetime.time(9,35):
+# ---------------- GET LTP ---------------- #
+def get_ltp(symbol):
+    return kite.ltp(symbol)[symbol]['last_price']
 
-        confirm_high = prev['high']
-        confirm_low = prev['low']
 
-        confirm_bull = prev['close'] > prev['open']
-        confirm_bear = prev['close'] < prev['open']
+# ---------------- ORDER ---------------- #
+def place_order(symbol):
+    return kite.place_order(
+        variety=kite.VARIETY_REGULAR,
+        exchange=kite.EXCHANGE_NFO,
+        tradingsymbol=symbol.split(":")[1],
+        transaction_type=kite.TRANSACTION_TYPE_BUY,
+        quantity=LOT_SIZE,
+        product=kite.PRODUCT_MIS,
+        order_type=kite.ORDER_TYPE_MARKET
+    )
 
-    # ================= VOLUME =================
-    avg_vol = df['volume'].rolling(20).mean().iloc[i]
-    high_vol = row['volume'] > avg_vol * 1.2
 
-    # ================= ENTRY =================
-    if position is None and time > datetime.time(9,35):
+# ---------------- STRATEGY ---------------- #
+def run_strategy():
+    global position, daily_pnl
 
-        # BUY
-        if (
-            orb_high is not None and
-            price > orb_high and
-            confirm_bull and
-            high_vol
-        ):
-            position = "BUY"
-            entry_price = price
+    df = get_nifty_data()
 
-            sl_price = confirm_low
-            risk = entry_price - sl_price
-            target_price = entry_price + (2 * risk)
+    # ORB RANGE
+    orb = df[(df['date'].dt.time >= dt.time(9, 15)) &
+             (df['date'].dt.time <= dt.time(9, 45))]
 
-        # SELL
-        elif (
-            orb_low is not None and
-            price < orb_low and
-            confirm_bear and
-            high_vol
-        ):
-            position = "SELL"
-            entry_price = price
+    if len(orb) < 6:
+        return
 
-            sl_price = confirm_high
-            risk = sl_price - entry_price
-            target_price = entry_price - (2 * risk)
+    orb_high = orb['high'].max()
+    orb_low = orb['low'].min()
 
-    # ================= EXIT =================
-    elif position:
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
 
-        premium_move = (price - entry_price) * PREMIUM_FACTOR
+    price = last['close']
 
-        # BUY
-        if position == "BUY":
+    # VOLUME CONFIRMATION
+    vol_avg = df['volume'].rolling(20).mean().iloc[-1]
+    vol_ok = last['volume'] > vol_avg
 
-            if price <= sl_price or price >= target_price:
-                pnl = premium_move * LOT_SIZE
-                capital += pnl
-                trades.append(pnl)
-                position = None
+    # CANDLE CONFIRMATION
+    bullish = last['close'] > last['open']
+    bearish = last['close'] < last['open']
 
-            else:
-                # TRAILING
-                sl_price = max(sl_price, prev['low'])
+    # ---------------- ENTRY ---------------- #
+    if position is None:
 
-        # SELL
-        elif position == "SELL":
+        # BUY CE
+        if price > orb_high and bullish and vol_ok:
 
-            if price >= sl_price or price <= target_price:
-                pnl = premium_move * LOT_SIZE
-                capital += pnl
-                trades.append(pnl)
-                position = None
+            strike = get_atm_strike(price)
+            symbol = get_option_symbol(strike, "CE")
 
-            else:
-                # TRAILING
-                sl_price = min(sl_price, prev['high'])
+            premium = get_ltp(symbol)
 
-# ================= RESULT =================
-wins = len([x for x in trades if x > 0])
-losses = len([x for x in trades if x < 0])
+            print("BUY CE:", symbol, premium)
+            place_order(symbol)
 
-print("\n📊 STRICT ORB (CONFIRMATION + RR + TRAILING)\n")
+            position = {
+                "symbol": symbol,
+                "type": "CE",
+                "entry": premium,
+                "sl": premium - 10,
+                "target": premium + 20,
+                "trail": premium - 10
+            }
 
-print(f"Starting Capital: ₹{START_CAPITAL}")
-print(f"Ending Capital: ₹{round(capital,2)}")
-print(f"Total PnL: ₹{round(capital - START_CAPITAL,2)}")
+        # BUY PE
+        elif price < orb_low and bearish and vol_ok:
 
-print(f"\nTotal Trades: {len(trades)}")
-print(f"Winning Trades: {wins}")
-print(f"Losing Trades: {losses}")
+            strike = get_atm_strike(price)
+            symbol = get_option_symbol(strike, "PE")
 
-if len(trades) > 0:
-    print(f"Win Rate: {round((wins/len(trades))*100,2)}%")
+            premium = get_ltp(symbol)
+
+            print("BUY PE:", symbol, premium)
+            place_order(symbol)
+
+            position = {
+                "symbol": symbol,
+                "type": "PE",
+                "entry": premium,
+                "sl": premium - 10,
+                "target": premium + 20,
+                "trail": premium - 10
+            }
+
+    # ---------------- EXIT ---------------- #
+    if position:
+
+        ltp = get_ltp(position["symbol"])
+
+        # TRAILING LOGIC
+        if ltp > position["entry"] + 10:
+            position["trail"] = max(position["trail"], ltp - 10)
+
+        exit_price = None
+
+        if ltp <= position["trail"]:
+            exit_price = ltp
+            print("TRAIL HIT")
+
+        elif ltp >= position["target"]:
+            exit_price = ltp
+            print("TARGET HIT")
+
+        if exit_price:
+            pnl = (exit_price - position["entry"]) * LOT_SIZE
+            daily_pnl += pnl
+
+            print(f"EXIT {position['symbol']} | PnL: {pnl} | Daily: {daily_pnl}")
+
+            position = None
+
+    # ---------------- RISK CONTROL ---------------- #
+    if daily_pnl <= MAX_DAILY_LOSS:
+        print("MAX LOSS HIT – STOP")
+        exit()
+
+
+# ---------------- LOOP ---------------- #
+while True:
+    try:
+        now = dt.datetime.now().time()
+
+        if dt.time(9, 46) <= now <= dt.time(15, 15):
+            run_strategy()
+
+        time.sleep(30)
+
+    except Exception as e:
+        print("Error:", e)
+        time.sleep(30)
