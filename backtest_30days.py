@@ -124,11 +124,11 @@ for i in range(30, len(df)):
 
                 last_direction = "SELL"
 
-        # ===== RE-ENTRY =====
+        # ===== RE-ENTRY (FIXED) =====
         elif not reentry_used:
 
             # BUY re-entry
-            if last_direction == "BUY" and price > orb_high:
+            if last_direction == "BUY" and price > orb_high and prev['close'] > prev['open']:
 
                 position = "BUY"
                 entry_price = price
@@ -140,7 +140,7 @@ for i in range(30, len(df)):
                 reentry_used = True
 
             # SELL re-entry
-            elif last_direction == "SELL" and price < orb_low:
+            elif last_direction == "SELL" and price < orb_low and prev['close'] < prev['open']:
 
                 position = "SELL"
                 entry_price = price
@@ -179,7 +179,7 @@ for i in range(30, len(df)):
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 FINAL ORB (WITH 1 RE-ENTRY)\n")
+print("\n📊 FINAL ORB (WITH FIXED RE-ENTRY)\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
