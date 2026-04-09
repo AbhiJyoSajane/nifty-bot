@@ -23,7 +23,7 @@ capital = START_CAPITAL
 
 PREMIUM_FACTOR = 0.5
 MAX_DAILY_LOSS = -2000
-MAX_TRADES_PER_DAY = 2
+MAX_TRADES_PER_DAY = 3   # balanced
 
 # ================= FETCH DATA =================
 to_date = datetime.datetime.now()
@@ -87,19 +87,19 @@ for i in range(30, len(df)):
     if orb_high is None or orb_low is None:
         continue
 
-    # ================= ORB FILTER =================
-    if (orb_high - orb_low) < 40:
+    # ================= ORB QUALITY FILTER =================
+    if (orb_high - orb_low) < 35:
         continue
 
     # ================= TIME FILTER =================
-    if time > datetime.time(13,30):
+    if time > datetime.time(14,30):
         continue
 
     # ================= ENTRY =================
     if position is None and time >= datetime.time(9,46) and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES_PER_DAY:
 
         # BUY
-        if price > orb_high + 5 and prev['close'] > prev['open']:
+        if price > orb_high + 2 and prev['close'] > prev['open']:
 
             position = "BUY"
             entry_price = price
@@ -109,7 +109,7 @@ for i in range(30, len(df)):
             trail_price = sl_price
 
         # SELL
-        elif price < orb_low - 5 and prev['close'] < prev['open']:
+        elif price < orb_low - 2 and prev['close'] < prev['open']:
 
             position = "SELL"
             entry_price = price
@@ -123,13 +123,13 @@ for i in range(30, len(df)):
 
         premium_move = (price - entry_price) * PREMIUM_FACTOR
 
-        # ===== SMART TRAILING =====
+        # ===== SMART TRAILING (BALANCED) =====
         if position == "BUY":
-            if price > entry_price + (15 / PREMIUM_FACTOR):
+            if price > entry_price + (10 / PREMIUM_FACTOR):
                 trail_price = max(trail_price, price - (5 / PREMIUM_FACTOR))
 
         elif position == "SELL":
-            if price < entry_price - (15 / PREMIUM_FACTOR):
+            if price < entry_price - (10 / PREMIUM_FACTOR):
                 trail_price = min(trail_price, price + (5 / PREMIUM_FACTOR))
 
         exit_trade = False
@@ -157,7 +157,7 @@ for i in range(30, len(df)):
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 FINAL OPTIMIZED ORB BACKTEST\n")
+print("\n📊 FINAL BALANCED ORB BACKTEST\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
