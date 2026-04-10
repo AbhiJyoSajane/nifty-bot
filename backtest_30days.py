@@ -35,46 +35,53 @@ df.columns = [c.lower() for c in df.columns]
 
 # ================= LOAD INSTRUMENTS =================
 print("📥 Loading instruments...")
-instruments = kite.instruments("NFO")
-inst_df = pd.DataFrame(instruments)
+inst_df = pd.DataFrame(kite.instruments("NFO"))
+inst_df['expiry'] = pd.to_datetime(inst_df['expiry'])
 
 # ================= HELPERS =================
 def get_atm(price):
     return round(price / 50) * 50
 
 def get_expiry(date):
-    thursday = date + datetime.timedelta((3 - date.weekday()) % 7)
-    return thursday
+    valid = inst_df[
+        (inst_df['name'] == "NIFTY") &
+        (inst_df['expiry'] >= pd.to_datetime(date))
+    ]
+    return valid['expiry'].min()
 
 def get_option_token(strike, expiry, opt_type):
-    data = inst_df[
+    row = inst_df[
+        (inst_df['name'] == "NIFTY") &
         (inst_df['strike'] == strike) &
-        (inst_df['instrument_type'] == opt_type) &
-        (inst_df['expiry'] == pd.Timestamp(expiry))
+        (inst_df['expiry'] == expiry) &
+        (inst_df['instrument_type'] == opt_type)
     ]
-    if not data.empty:
-        return int(data.iloc[0]['instrument_token'])
-    return None
+    return int(row.iloc[0]['instrument_token']) if not row.empty else None
 
-# ================= CACHE =================
+# ================= OPTION CACHE =================
 option_cache = {}
 
-def get_option_data(token):
-    if token in option_cache:
-        return option_cache[token]
+def load_option(token):
+    if token not in option_cache:
+        data = kite.historical_data(token, from_date, to_date, "5minute")
+        df_opt = pd.DataFrame(data)
+        df_opt.columns = [c.lower() for c in df_opt.columns]
+        df_opt['date'] = pd.to_datetime(df_opt['date'])
+        df_opt.set_index('date', inplace=True)
+        option_cache[token] = df_opt
+    return option_cache[token]
 
-    data = kite.historical_data(token, from_date, to_date, "5minute")
-    df_opt = pd.DataFrame(data)
-    df_opt.columns = [c.lower() for c in df_opt.columns]
-
-    option_cache[token] = df_opt
-    return df_opt
+def get_nearest_price(opt_df, time_):
+    time_ = pd.to_datetime(time_)
+    idx = opt_df.index.get_indexer([time_], method='nearest')
+    return opt_df.iloc[idx[0]]['close']
 
 # ================= BACKTEST =================
 position = None
 entry_price = 0
 sl = 0
 target = 0
+opt_df = None
 
 orb_high = None
 orb_low = None
@@ -91,8 +98,9 @@ for i in range(20, len(df)):
     prev = df.iloc[i-1]
 
     price = row['close']
-    time = row['date'].time()
-    date = row['date'].date()
+    time_ = row['date']
+    t = time_.time()
+    date = time_.date()
 
     # ===== RESET DAILY =====
     if current_day != date:
@@ -104,7 +112,7 @@ for i in range(20, len(df)):
         position = None
 
     # ===== BUILD ORB =====
-    if datetime.time(9,15) <= time <= datetime.time(9,45):
+    if datetime.time(9,15) <= t <= datetime.time(9,45):
         if orb_high is None:
             orb_high = row['high']
             orb_low = row['low']
@@ -128,13 +136,8 @@ for i in range(20, len(df)):
             if token is None:
                 continue
 
-            opt_df = get_option_data(token)
-            opt_row = opt_df[opt_df['date'] == row['date']]
-
-            if opt_row.empty:
-                continue
-
-            entry_price = opt_row.iloc[0]['close']
+            opt_df = load_option(token)
+            entry_price = get_nearest_price(opt_df, time_)
 
             position = "CE"
             sl = entry_price - 15
@@ -147,13 +150,8 @@ for i in range(20, len(df)):
             if token is None:
                 continue
 
-            opt_df = get_option_data(token)
-            opt_row = opt_df[opt_df['date'] == row['date']]
-
-            if opt_row.empty:
-                continue
-
-            entry_price = opt_row.iloc[0]['close']
+            opt_df = load_option(token)
+            entry_price = get_nearest_price(opt_df, time_)
 
             position = "PE"
             sl = entry_price - 15
@@ -162,11 +160,7 @@ for i in range(20, len(df)):
     # ===== EXIT =====
     elif position:
 
-        opt_row = opt_df[opt_df['date'] == row['date']]
-        if opt_row.empty:
-            continue
-
-        current_price = opt_row.iloc[0]['close']
+        current_price = get_nearest_price(opt_df, time_)
 
         exit_trade = False
 
