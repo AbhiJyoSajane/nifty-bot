@@ -10,7 +10,6 @@ request_token = os.environ.get("REQUEST_TOKEN")
 
 kite = KiteConnect(api_key=api_key)
 
-# ===== GENERATE ACCESS TOKEN (RUN ONCE) =====
 data = kite.generate_session(request_token, api_secret=api_secret)
 kite.set_access_token(data["access_token"])
 
@@ -26,25 +25,22 @@ capital = START_CAPITAL
 MAX_DAILY_LOSS = -2000
 MAX_TRADES = 3
 
-PREMIUM_FACTOR = 0.5  # Approx premium move
+PREMIUM_FACTOR = 0.5
 
 # ================= DATE =================
 to_date = datetime.datetime.now()
 from_date = to_date - datetime.timedelta(days=30)
 
-# ================= FETCH DATA =================
+# ================= FETCH =================
 spot = kite.historical_data(NIFTY, from_date, to_date, "5minute")
 df = pd.DataFrame(spot)
 df.columns = [c.lower() for c in df.columns]
-
-# ================= HELPER =================
-def get_atm(price):
-    return round(price / 50) * 50
 
 # ================= BACKTEST =================
 position = None
 entry_price = 0
 sl = 0
+target = 0
 
 orb_high = None
 orb_low = None
@@ -85,64 +81,44 @@ for i in range(20, len(df)):
     if orb_high is None or orb_low is None:
         continue
 
-    # ===== SKIP NOISE TIME =====
-    if time < datetime.time(10,0):
-        continue
-
-    # ===== ENTRY CONDITIONS =====
+    # ===== ENTRY =====
     if position is None and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES:
 
-        candle_body = abs(row['close'] - row['open'])
-        candle_range = row['high'] - row['low']
-
-        strong_candle = candle_body > (0.6 * candle_range)
-
-        # ===== BUY CE =====
-        if price > orb_high and prev['close'] > prev['open'] and strong_candle:
-
-            # RETEST LOGIC
-            if df.iloc[i-2]['close'] < orb_high:
-                continue
+        # BUY
+        if price > orb_high and prev['close'] > prev['open']:
 
             position = "BUY"
             entry_price = price
+
             sl = prev['low']
+            risk = entry_price - sl
+            target = entry_price + (2 * risk)
 
-        # ===== BUY PE =====
-        elif price < orb_low and prev['close'] < prev['open'] and strong_candle:
-
-            if df.iloc[i-2]['close'] > orb_low:
-                continue
+        # SELL
+        elif price < orb_low and prev['close'] < prev['open']:
 
             position = "SELL"
             entry_price = price
+
             sl = prev['high']
+            risk = sl - entry_price
+            target = entry_price - (2 * risk)
 
     # ===== EXIT =====
     elif position:
 
         move = (price - entry_price) * PREMIUM_FACTOR
 
-        # TRAILING SL
-        if move > 15:
-            sl = entry_price
-
-        if move > 30:
-            if position == "BUY":
-                sl = max(sl, entry_price + 10)
-            else:
-                sl = min(sl, entry_price - 10)
-
         exit_trade = False
 
         if position == "BUY":
-            if price <= sl:
-                pnl = (price - entry_price) * PREMIUM_FACTOR * LOT_SIZE
+            if price <= sl or price >= target:
+                pnl = move * LOT_SIZE
                 exit_trade = True
 
         elif position == "SELL":
-            if price >= sl:
-                pnl = (entry_price - price) * PREMIUM_FACTOR * LOT_SIZE
+            if price >= sl or price <= target:
+                pnl = move * LOT_SIZE
                 exit_trade = True
 
         if exit_trade:
@@ -157,7 +133,7 @@ for i in range(20, len(df)):
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 FINAL OPTIMIZED ORB BACKTEST\n")
+print("\n📊 FINAL STABLE ORB BACKTEST\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
