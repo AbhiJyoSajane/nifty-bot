@@ -2,17 +2,39 @@ from kiteconnect import KiteConnect
 import pandas as pd
 import datetime
 import os
+import sys
+import time
+
+# ================= START =================
+print("🚀 SCRIPT STARTED")
 
 # ================= CONFIG =================
 api_key = os.environ.get("API_KEY")
 api_secret = os.environ.get("API_SECRET")
 request_token = os.environ.get("REQUEST_TOKEN")
 
-kite = KiteConnect(api_key=api_key)
-data = kite.generate_session(request_token, api_secret=api_secret)
-kite.set_access_token(data["access_token"])
+print("🔍 Checking environment variables...")
 
-print("✅ Connected")
+if not api_key or not api_secret or not request_token:
+    print("❌ Missing ENV variables")
+    print("API_KEY:", api_key)
+    print("API_SECRET:", api_secret)
+    print("REQUEST_TOKEN:", request_token)
+    sys.exit()
+
+print("✅ ENV variables found")
+
+kite = KiteConnect(api_key=api_key)
+
+# ================= LOGIN =================
+try:
+    print("🔐 Generating session...")
+    data = kite.generate_session(request_token, api_secret=api_secret)
+    kite.set_access_token(data["access_token"])
+    print("✅ Connected Successfully")
+except Exception as e:
+    print("❌ LOGIN FAILED:", e)
+    sys.exit()
 
 # ================= SETTINGS =================
 NIFTY = 256265
@@ -29,22 +51,44 @@ to_date = datetime.datetime.now()
 from_date = to_date - datetime.timedelta(days=30)
 
 # ================= FETCH SPOT =================
-spot = kite.historical_data(NIFTY, from_date, to_date, "5minute")
+try:
+    print("📡 Fetching NIFTY spot data...")
+    spot = kite.historical_data(NIFTY, from_date, to_date, "5minute")
+except Exception as e:
+    print("❌ Spot data fetch failed:", e)
+    sys.exit()
+
 df = pd.DataFrame(spot)
+
+if df.empty:
+    print("❌ No spot data received")
+    sys.exit()
+
 df.columns = [c.lower() for c in df.columns]
+print("✅ Spot data loaded:", len(df))
 
 # ================= LOAD INSTRUMENTS =================
-inst = pd.DataFrame(kite.instruments("NFO"))
-inst['expiry'] = pd.to_datetime(inst['expiry'])
+try:
+    print("📥 Loading instruments...")
+    inst = pd.DataFrame(kite.instruments("NFO"))
+    inst['expiry'] = pd.to_datetime(inst['expiry'])
+    print("✅ Instruments loaded:", len(inst))
+except Exception as e:
+    print("❌ Instruments load failed:", e)
+    sys.exit()
 
+# ================= HELPERS =================
 def get_atm(price):
     return round(price / 50) * 50
 
 def get_expiry(date):
-    return inst[
+    valid = inst[
         (inst['name'] == "NIFTY") &
         (inst['expiry'] >= pd.to_datetime(date))
-    ]['expiry'].min()
+    ]
+    if valid.empty:
+        return None
+    return valid['expiry'].min()
 
 def get_token(strike, expiry, opt_type):
     row = inst[
@@ -60,12 +104,16 @@ option_cache = {}
 
 def load_option(token):
     if token not in option_cache:
-        data = kite.historical_data(token, from_date, to_date, "5minute")
-        df_opt = pd.DataFrame(data)
-        df_opt.columns = [c.lower() for c in df_opt.columns]
-        df_opt['date'] = pd.to_datetime(df_opt['date'])
-        df_opt.set_index('date', inplace=True)
-        option_cache[token] = df_opt
+        try:
+            data = kite.historical_data(token, from_date, to_date, "5minute")
+            df_opt = pd.DataFrame(data)
+            df_opt.columns = [c.lower() for c in df_opt.columns]
+            df_opt['date'] = pd.to_datetime(df_opt['date'])
+            df_opt.set_index('date', inplace=True)
+            option_cache[token] = df_opt
+        except Exception as e:
+            print("❌ Option fetch failed:", e)
+            return None
     return option_cache[token]
 
 def get_price(opt_df, time_):
@@ -74,6 +122,8 @@ def get_price(opt_df, time_):
     return opt_df.iloc[idx[0]]['close']
 
 # ================= BACKTEST =================
+print("🚀 Starting backtest loop...")
+
 position = None
 entry = 0
 sl = 0
@@ -126,6 +176,9 @@ for i in range(20, len(df)):
         if datetime.time(9,46) <= t <= datetime.time(13,30):
 
             expiry = get_expiry(date)
+            if expiry is None:
+                continue
+
             atm = get_atm(price)
 
             # BUY SIGNAL
@@ -136,8 +189,10 @@ for i in range(20, len(df)):
 
                 if token:
                     opt_df = load_option(token)
-                    entry = get_price(opt_df, time_)
+                    if opt_df is None:
+                        continue
 
+                    entry = get_price(opt_df, time_)
                     position = "BUY"
 
                     sl = entry * 0.75
@@ -151,8 +206,10 @@ for i in range(20, len(df)):
 
                 if token:
                     opt_df = load_option(token)
-                    entry = get_price(opt_df, time_)
+                    if opt_df is None:
+                        continue
 
+                    entry = get_price(opt_df, time_)
                     position = "SELL"
 
                     sl = entry * 0.75
@@ -163,8 +220,6 @@ for i in range(20, len(df)):
 
         current = get_price(opt_df, time_)
 
-        exit_trade = False
-
         # TRAILING
         if current > entry * 1.2:
             sl = entry
@@ -174,9 +229,7 @@ for i in range(20, len(df)):
 
         if current <= sl or current >= target:
             pnl = (current - entry) * LOT_SIZE
-            exit_trade = True
 
-        if exit_trade:
             capital += pnl
             daily_pnl += pnl
             results.append(pnl)
@@ -188,7 +241,7 @@ for i in range(20, len(df)):
 wins = len([x for x in results if x > 0])
 losses = len([x for x in results if x < 0])
 
-print("\n📊 FULL OPTION STRATEGY RESULT\n")
+print("\n📊 FINAL RESULT\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
@@ -198,3 +251,10 @@ print(f"\nTrades: {len(results)} | Wins: {wins} | Losses: {losses}")
 
 if results:
     print(f"Win Rate: {round((wins/len(results))*100,2)}%")
+else:
+    print("⚠️ No trades executed")
+
+# ================= PREVENT RAILWAY RESTART =================
+print("🛑 Keeping container alive...")
+while True:
+    time.sleep(60)
