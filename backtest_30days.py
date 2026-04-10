@@ -16,13 +16,13 @@ print("✅ Connected")
 
 # ================= SETTINGS =================
 NIFTY = 256265
-LOT_SIZE = 65
+LOT_SIZE = 50
 
 START_CAPITAL = 20000
 capital = START_CAPITAL
 
-MAX_DAILY_LOSS = -2000
 MAX_TRADES = 3
+MAX_DAILY_LOSS = -2000
 
 # ================= DATE =================
 to_date = datetime.datetime.now()
@@ -34,27 +34,24 @@ df = pd.DataFrame(spot)
 df.columns = [c.lower() for c in df.columns]
 
 # ================= LOAD INSTRUMENTS =================
-print("📥 Loading instruments...")
-inst_df = pd.DataFrame(kite.instruments("NFO"))
-inst_df['expiry'] = pd.to_datetime(inst_df['expiry'])
+inst = pd.DataFrame(kite.instruments("NFO"))
+inst['expiry'] = pd.to_datetime(inst['expiry'])
 
-# ================= HELPERS =================
 def get_atm(price):
     return round(price / 50) * 50
 
 def get_expiry(date):
-    valid = inst_df[
-        (inst_df['name'] == "NIFTY") &
-        (inst_df['expiry'] >= pd.to_datetime(date))
-    ]
-    return valid['expiry'].min()
+    return inst[
+        (inst['name'] == "NIFTY") &
+        (inst['expiry'] >= pd.to_datetime(date))
+    ]['expiry'].min()
 
-def get_option_token(strike, expiry, opt_type):
-    row = inst_df[
-        (inst_df['name'] == "NIFTY") &
-        (inst_df['strike'] == strike) &
-        (inst_df['expiry'] == expiry) &
-        (inst_df['instrument_type'] == opt_type)
+def get_token(strike, expiry, opt_type):
+    row = inst[
+        (inst['name'] == "NIFTY") &
+        (inst['strike'] == strike) &
+        (inst['expiry'] == expiry) &
+        (inst['instrument_type'] == opt_type)
     ]
     return int(row.iloc[0]['instrument_token']) if not row.empty else None
 
@@ -71,14 +68,14 @@ def load_option(token):
         option_cache[token] = df_opt
     return option_cache[token]
 
-def get_nearest_price(opt_df, time_):
+def get_price(opt_df, time_):
     time_ = pd.to_datetime(time_)
     idx = opt_df.index.get_indexer([time_], method='nearest')
     return opt_df.iloc[idx[0]]['close']
 
 # ================= BACKTEST =================
 position = None
-entry_price = 0
+entry = 0
 sl = 0
 target = 0
 opt_df = None
@@ -87,10 +84,10 @@ orb_high = None
 orb_low = None
 
 daily_pnl = 0
-trade_count = 0
+trades = 0
 current_day = None
 
-trades = []
+results = []
 
 for i in range(20, len(df)):
 
@@ -102,16 +99,16 @@ for i in range(20, len(df)):
     t = time_.time()
     date = time_.date()
 
-    # ===== RESET DAILY =====
+    # RESET
     if current_day != date:
         current_day = date
-        daily_pnl = 0
-        trade_count = 0
         orb_high = None
         orb_low = None
         position = None
+        daily_pnl = 0
+        trades = 0
 
-    # ===== BUILD ORB =====
+    # BUILD ORB
     if datetime.time(9,15) <= t <= datetime.time(9,45):
         if orb_high is None:
             orb_high = row['high']
@@ -120,75 +117,84 @@ for i in range(20, len(df)):
             orb_high = max(orb_high, row['high'])
             orb_low = min(orb_low, row['low'])
 
-    if orb_high is None or orb_low is None:
+    if orb_high is None:
         continue
 
-    # ===== ENTRY =====
-    if position is None and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES:
+    # ENTRY
+    if position is None and trades < MAX_TRADES and daily_pnl > MAX_DAILY_LOSS:
 
-        strike = get_atm(price)
-        expiry = get_expiry(date)
+        if datetime.time(9,46) <= t <= datetime.time(13,30):
 
-        # BUY CE
-        if price > orb_high and prev['close'] > prev['open']:
+            expiry = get_expiry(date)
+            atm = get_atm(price)
 
-            token = get_option_token(strike, expiry, "CE")
-            if token is None:
-                continue
+            # BUY SIGNAL
+            if price > orb_high and prev['close'] > prev['open']:
 
-            opt_df = load_option(token)
-            entry_price = get_nearest_price(opt_df, time_)
+                strike = atm - 100
+                token = get_token(strike, expiry, "CE")
 
-            position = "CE"
-            sl = entry_price - 15
-            target = entry_price + 30
+                if token:
+                    opt_df = load_option(token)
+                    entry = get_price(opt_df, time_)
 
-        # BUY PE
-        elif price < orb_low and prev['close'] < prev['open']:
+                    position = "BUY"
 
-            token = get_option_token(strike, expiry, "PE")
-            if token is None:
-                continue
+                    sl = entry * 0.75
+                    target = entry * 1.5
 
-            opt_df = load_option(token)
-            entry_price = get_nearest_price(opt_df, time_)
+            # SELL SIGNAL
+            elif price < orb_low and prev['close'] < prev['open']:
 
-            position = "PE"
-            sl = entry_price - 15
-            target = entry_price + 30
+                strike = atm + 100
+                token = get_token(strike, expiry, "PE")
 
-    # ===== EXIT =====
+                if token:
+                    opt_df = load_option(token)
+                    entry = get_price(opt_df, time_)
+
+                    position = "SELL"
+
+                    sl = entry * 0.75
+                    target = entry * 1.5
+
+    # EXIT
     elif position:
 
-        current_price = get_nearest_price(opt_df, time_)
+        current = get_price(opt_df, time_)
 
         exit_trade = False
 
-        if current_price <= sl or current_price >= target:
-            pnl = (current_price - entry_price) * LOT_SIZE
+        # TRAILING
+        if current > entry * 1.2:
+            sl = entry
+
+        if current > entry * 1.4:
+            sl = max(sl, entry * 1.2)
+
+        if current <= sl or current >= target:
+            pnl = (current - entry) * LOT_SIZE
             exit_trade = True
 
         if exit_trade:
             capital += pnl
             daily_pnl += pnl
-            trades.append(pnl)
+            results.append(pnl)
 
             position = None
-            trade_count += 1
+            trades += 1
 
 # ================= RESULT =================
-wins = len([x for x in trades if x > 0])
-losses = len([x for x in trades if x < 0])
+wins = len([x for x in results if x > 0])
+losses = len([x for x in results if x < 0])
 
-print("\n📊 REAL OPTION BACKTEST RESULT\n")
+print("\n📊 FULL OPTION STRATEGY RESULT\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
 print(f"Total PnL: ₹{round(capital - START_CAPITAL,2)}")
 
-print(f"\nTotal Trades: {len(trades)}")
-print(f"Winning Trades: {wins}")
-print(f"Losing Trades: {losses}")
+print(f"\nTrades: {len(results)} | Wins: {wins} | Losses: {losses}")
 
-if len(trades) > 0:
-    print(f"Win Rate: {round((wins/len(trades))*100,2)}%")
+if results:
+    print(f"Win Rate: {round((wins/len(results))*100,2)}%")
