@@ -9,7 +9,6 @@ api_secret = os.environ.get("API_SECRET")
 request_token = os.environ.get("REQUEST_TOKEN")
 
 kite = KiteConnect(api_key=api_key)
-
 data = kite.generate_session(request_token, api_secret=api_secret)
 kite.set_access_token(data["access_token"])
 
@@ -25,16 +24,51 @@ capital = START_CAPITAL
 MAX_DAILY_LOSS = -2000
 MAX_TRADES = 3
 
-PREMIUM_FACTOR = 0.5
-
 # ================= DATE =================
 to_date = datetime.datetime.now()
 from_date = to_date - datetime.timedelta(days=30)
 
-# ================= FETCH =================
+# ================= FETCH SPOT =================
 spot = kite.historical_data(NIFTY, from_date, to_date, "5minute")
 df = pd.DataFrame(spot)
 df.columns = [c.lower() for c in df.columns]
+
+# ================= LOAD INSTRUMENTS =================
+print("📥 Loading instruments...")
+instruments = kite.instruments("NFO")
+inst_df = pd.DataFrame(instruments)
+
+# ================= HELPERS =================
+def get_atm(price):
+    return round(price / 50) * 50
+
+def get_expiry(date):
+    thursday = date + datetime.timedelta((3 - date.weekday()) % 7)
+    return thursday
+
+def get_option_token(strike, expiry, opt_type):
+    data = inst_df[
+        (inst_df['strike'] == strike) &
+        (inst_df['instrument_type'] == opt_type) &
+        (inst_df['expiry'] == pd.Timestamp(expiry))
+    ]
+    if not data.empty:
+        return int(data.iloc[0]['instrument_token'])
+    return None
+
+# ================= CACHE =================
+option_cache = {}
+
+def get_option_data(token):
+    if token in option_cache:
+        return option_cache[token]
+
+    data = kite.historical_data(token, from_date, to_date, "5minute")
+    df_opt = pd.DataFrame(data)
+    df_opt.columns = [c.lower() for c in df_opt.columns]
+
+    option_cache[token] = df_opt
+    return df_opt
 
 # ================= BACKTEST =================
 position = None
@@ -84,42 +118,61 @@ for i in range(20, len(df)):
     # ===== ENTRY =====
     if position is None and daily_pnl > MAX_DAILY_LOSS and trade_count < MAX_TRADES:
 
-        # BUY
+        strike = get_atm(price)
+        expiry = get_expiry(date)
+
+        # BUY CE
         if price > orb_high and prev['close'] > prev['open']:
 
-            position = "BUY"
-            entry_price = price
+            token = get_option_token(strike, expiry, "CE")
+            if token is None:
+                continue
 
-            sl = prev['low']
-            risk = entry_price - sl
-            target = entry_price + (2 * risk)
+            opt_df = get_option_data(token)
+            opt_row = opt_df[opt_df['date'] == row['date']]
 
-        # SELL
+            if opt_row.empty:
+                continue
+
+            entry_price = opt_row.iloc[0]['close']
+
+            position = "CE"
+            sl = entry_price - 15
+            target = entry_price + 30
+
+        # BUY PE
         elif price < orb_low and prev['close'] < prev['open']:
 
-            position = "SELL"
-            entry_price = price
+            token = get_option_token(strike, expiry, "PE")
+            if token is None:
+                continue
 
-            sl = prev['high']
-            risk = sl - entry_price
-            target = entry_price - (2 * risk)
+            opt_df = get_option_data(token)
+            opt_row = opt_df[opt_df['date'] == row['date']]
+
+            if opt_row.empty:
+                continue
+
+            entry_price = opt_row.iloc[0]['close']
+
+            position = "PE"
+            sl = entry_price - 15
+            target = entry_price + 30
 
     # ===== EXIT =====
     elif position:
 
-        move = (price - entry_price) * PREMIUM_FACTOR
+        opt_row = opt_df[opt_df['date'] == row['date']]
+        if opt_row.empty:
+            continue
+
+        current_price = opt_row.iloc[0]['close']
 
         exit_trade = False
 
-        if position == "BUY":
-            if price <= sl or price >= target:
-                pnl = move * LOT_SIZE
-                exit_trade = True
-
-        elif position == "SELL":
-            if price >= sl or price <= target:
-                pnl = move * LOT_SIZE
-                exit_trade = True
+        if current_price <= sl or current_price >= target:
+            pnl = (current_price - entry_price) * LOT_SIZE
+            exit_trade = True
 
         if exit_trade:
             capital += pnl
@@ -133,7 +186,7 @@ for i in range(20, len(df)):
 wins = len([x for x in trades if x > 0])
 losses = len([x for x in trades if x < 0])
 
-print("\n📊 FINAL STABLE ORB BACKTEST\n")
+print("\n📊 REAL OPTION BACKTEST RESULT\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
