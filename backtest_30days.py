@@ -1,87 +1,92 @@
 import pandas as pd
-import numpy as np
 from kiteconnect import KiteConnect
 from datetime import datetime, timedelta
 
-# --- CONFIGURATION ---
+# --- 1. CREDENTIALS ---
+# Get these from https://kite.trade/developer/dashboard
 API_KEY = "your_api_key"
-ACCESS_TOKEN = "your_access_token"  # Generated via your login flow
-STOP_LOSS_PCT = 0.25               # 25% SL on each leg
-ENTRY_TIME = "09:20:00"
-EXIT_TIME = "15:10:00"
-LOT_SIZE = 50
+API_SECRET = "your_api_secret"
 
-# Initialize Kite
+# 2. GETTING THE REQUEST TOKEN:
+# Login here: https://kite.trade/connect/login?api_key=YOUR_API_KEY
+# Copy the 'request_token=' value from the URL after redirecting.
+REQUEST_TOKEN = "paste_your_request_token_here" 
+
+# --- 2. INITIALIZE & AUTHENTICATE ---
 kite = KiteConnect(api_key=API_KEY)
-kite.set_access_token(ACCESS_TOKEN)
 
-def get_nifty_data(days=30):
-    """Fetches historical minute-level data for Nifty 50 Index"""
+try:
+    # Exchange Request Token for Access Token
+    data = kite.generate_session(REQUEST_TOKEN, api_secret=API_SECRET)
+    access_token = data["access_token"]
+    kite.set_access_token(access_token)
+    print(f"✅ Authentication Successful! Access Token: {access_token}")
+except Exception as e:
+    print(f"❌ Auth Failed: {e}")
+    print("Check if your Request Token is expired (they last only a few minutes) or already used.")
+    exit()
+
+# --- 3. BACKTEST LOGIC ---
+def run_30_day_backtest():
+    print("🔄 Fetching 30 days of Nifty 50 data...")
+    
+    # Get Nifty 50 Instrument Token
     instruments = kite.instruments("NSE")
     nifty_token = next(i['instrument_token'] for i in instruments if i['tradingsymbol'] == 'NIFTY 50')
-    
-    to_date = datetime.now()
-    from_date = to_date - timedelta(days=days)
-    
-    # Kite returns max 30 days of minute data in one call
-    data = kite.historical_data(nifty_token, from_date, to_date, "minute")
-    df = pd.DataFrame(data)
-    df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
-    return df
 
-def run_backtest():
-    df = get_nifty_data(30)
+    # Fetch Data
+    to_date = datetime.now()
+    from_date = to_date - timedelta(days=30)
+    
+    try:
+        records = kite.historical_data(nifty_token, from_date, to_date, "minute")
+    except Exception as e:
+        print(f"❌ Historical Data Error: {e}")
+        print("Tip: Ensure 'Historical API' is subscribed in your Kite Dashboard.")
+        return
+
+    df = pd.DataFrame(records)
+    df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
     df['day'] = df['date'].dt.date
+    
     results = []
+    lot_size = 50
+    sl_pct = 0.25 # 25% Stop Loss
 
     for day, day_df in df.groupby('day'):
-        # 1. Entry Logic at 09:20
-        entry_row = day_df[day_df['date'].dt.strftime('%H:%M:%S') == ENTRY_TIME]
+        # Entry at 09:20
+        entry_row = day_df[day_df['date'].dt.strftime('%H:%M') == '09:20']
         if entry_row.empty: continue
         
-        entry_price = entry_row.iloc[0]['close']
+        spot_entry = entry_row.iloc[0]['close']
         
-        # 2. Simulate Option Premiums
-        # At 9:20 AM, a 100-point OTM Nifty option is roughly 0.6% of Nifty value
-        initial_premium = (entry_price * 0.006) 
-        ce_price = pe_price = initial_premium
-        ce_sl = ce_price * (1 + STOP_LOSS_PCT)
-        pe_sl = pe_price * (1 + STOP_LOSS_PCT)
+        # Simulate combined Premium (Approx 1.2% of Spot for a Strangle)
+        initial_premium = spot_entry * 0.012 
+        sl_value = initial_premium * (1 + sl_pct)
         
-        ce_active = pe_active = True
-        day_pnl = 0
-
-        # 3. Intraday Loop (Checking for SL triggers)
-        for _, row in day_df[day_df['date'].dt.strftime('%H:%M:%S') > ENTRY_TIME].iterrows():
-            # Calculate price change since entry
-            price_change = row['close'] - entry_price
+        # Exit at 15:10
+        exit_row = day_df[day_df['date'].dt.strftime('%H:%M') == '15:10']
+        if exit_row.empty: exit_row = day_df.iloc[-1:]
+        
+        spot_exit = exit_row.iloc[0]['close']
+        
+        # Simple Delta-based PnL simulation
+        # If market moves > 1.2%, assume SL hit. Otherwise, assume 40% Theta decay.
+        price_move_pct = abs(spot_exit - spot_entry) / spot_entry
+        
+        if price_move_pct > 0.012: 
+            day_pnl = -(initial_premium * sl_pct) # Loss capped at SL
+        else:
+            day_pnl = initial_premium * 0.40 # Profit from decay
             
-            # Simulate Option Movement (Delta ~0.4 for near-OTM)
-            current_ce = initial_premium + (price_change * 0.4)
-            current_pe = initial_premium - (price_change * 0.4)
+        results.append({'Date': day, 'PnL': day_pnl * lot_size})
 
-            # Check CE Stop Loss
-            if ce_active and current_ce >= ce_sl:
-                day_pnl -= (ce_sl - initial_premium)
-                ce_active = False
-            
-            # Check PE Stop Loss
-            if pe_active and current_pe >= pe_sl:
-                day_pnl -= (pe_sl - initial_premium)
-                pe_active = False
+    report = pd.DataFrame(results)
+    print("\n" + "="*30)
+    print(report)
+    print("="*30)
+    print(f"TOTAL 30-DAY PNL: ₹{report['PnL'].sum():.2f}")
+    print(f"WIN RATE: {(report['PnL'] > 0).mean()*100:.2f}%")
 
-            # Square off at 3:10 PM
-            if row['date'].strftime('%H:%M:%S') >= EXIT_TIME:
-                if ce_active: day_pnl += (initial_premium - current_ce)
-                if pe_active: day_pnl += (initial_premium - current_pe)
-                break
-        
-        results.append({'Date': day, 'PnL': day_pnl * LOT_SIZE})
-
-    return pd.DataFrame(results)
-
-# --- EXECUTION ---
-report = run_backtest()
-print(report)
-print(f"\nTotal Net Profit: Rs. {report['PnL'].sum():.2f}")
-print(f"Win Rate: {(report['PnL'] > 0).mean() * 100:.2f}%")
+if __name__ == "__main__":
+    run_30_day_backtest()
