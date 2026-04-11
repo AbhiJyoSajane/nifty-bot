@@ -3,6 +3,7 @@ import time
 import pandas as pd
 
 BASE_URL = "https://api.delta.exchange"
+
 SYMBOL = "BTCUSDT"
 QTY = 1
 
@@ -16,6 +17,7 @@ def get_candles():
         start = end - (60 * 60 * 5)  # last 5 hours
 
         url = f"{BASE_URL}/v2/history/candles"
+
         params = {
             "symbol": SYMBOL,
             "resolution": "5m",
@@ -56,14 +58,6 @@ def calculate_indicators(df):
     return df
 
 
-def print_status(price, rsi, pos, entry):
-    if pos:
-        pl = ((price - entry) / entry) * 100
-        print(f"[ACTIVE POSITION] {pos} | Entry: {entry:.2f} | Current: {price:.2f} | P/L: {pl:.2f}% | RSI: {rsi:.2f}")
-    else:
-        print(f"[NO POSITION] Price: {price:.2f} | RSI: {rsi:.2f}")
-
-
 while True:
     try:
         df = get_candles()
@@ -76,31 +70,29 @@ while True:
         df = calculate_indicators(df)
 
         last = df.iloc[-1]
-        prev = df.iloc[-2]
-
         price = last['close']
-        rsi = last['rsi']
 
-        print_status(price, rsi, position, entry_price)
+        print(f"[{position if position else 'NO POSITION'}] Price: {price:.2f} | RSI: {last['rsi']:.2f}")
 
-        # BUY CONDITION
-        if (prev['ema9'] < prev['ema21'] and last['ema9'] > last['ema21'] and last['rsi'] > 50 and position is None):
-            print(f"✅ BUY SIGNAL at {price:.2f} | RSI: {rsi:.2f}")
+        # ✅ BUY CONDITION (UPDATED)
+        if (last['ema9'] > last['ema21'] and last['rsi'] > 50 and position is None):
+            print("BUY SIGNAL")
             position = "BUY"
             entry_price = price
 
-        # SELL CONDITION (exit)
-        elif (prev['ema9'] > prev['ema21'] and last['ema9'] < last['ema21'] and last['rsi'] < 50 and position == "BUY"):
-            print(f"🔻 SELL SIGNAL (Opposite) at {price:.2f} | RSI: {rsi:.2f}")
+        # ✅ SELL CONDITION (UPDATED)
+        elif (last['ema9'] < last['ema21'] and last['rsi'] < 50 and position == "BUY"):
+            print("SELL SIGNAL (Opposite)")
             position = None
 
-        # SL / TARGET
+        # ✅ STOP LOSS / TARGET
         if position == "BUY":
             if price <= entry_price * (1 - 0.015):
-                print(f"⛔ STOP LOSS HIT at {price:.2f}")
+                print("STOP LOSS HIT")
                 position = None
+
             elif price >= entry_price * (1 + 0.03):
-                print(f"🏁 TARGET HIT at {price:.2f}")
+                print("TARGET HIT")
                 position = None
 
         time.sleep(60)
