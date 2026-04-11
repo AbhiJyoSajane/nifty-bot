@@ -1,25 +1,22 @@
 import requests
 import time
 import pandas as pd
+import numpy as np
 
 BASE_URL = "https://api.delta.exchange"
-
 SYMBOL = "BTCUSDT"
 
-MODE = "BACKTEST"   # keep BACKTEST for now
-
+capital = 100
 position = None
 entry_price = 0
+position_size = 0
 trades = []
-balance = 1000
-
 
 def get_candles():
     end = int(time.time())
-    start = end - (60 * 60 * 24 * 5)  # last 5 days
+    start = end - (60 * 60 * 24 * 5)
 
     url = f"{BASE_URL}/v2/history/candles"
-
     params = {
         "symbol": SYMBOL,
         "resolution": "5m",
@@ -29,53 +26,59 @@ def get_candles():
 
     res = requests.get(url, params=params).json()
 
-    if 'result' not in res:
-        print("API Error:", res)
-        return pd.DataFrame()
-
     df = pd.DataFrame(res['result'])
-    df['close'] = df['close'].astype(float)
+    df[['open','high','low','close']] = df[['open','high','low','close']].astype(float)
 
     return df
 
 
-def calculate_indicators(df):
-    df['ema9'] = df['close'].ewm(span=9).mean()
-    df['ema21'] = df['close'].ewm(span=21).mean()
+def supertrend(df, period=10, multiplier=3):
+    hl2 = (df['high'] + df['low']) / 2
+    df['tr'] = np.maximum(df['high'] - df['low'],
+                         np.maximum(abs(df['high'] - df['close'].shift()),
+                                    abs(df['low'] - df['close'].shift())))
+    df['atr'] = df['tr'].rolling(period).mean()
 
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df['upperband'] = hl2 + (multiplier * df['atr'])
+    df['lowerband'] = hl2 - (multiplier * df['atr'])
 
-    rs = gain / loss
-    df['rsi'] = 100 - (100 / (1 + rs))
+    df['trend'] = True
+
+    for i in range(1, len(df)):
+        if df['close'][i] > df['upperband'][i-1]:
+            df['trend'][i] = True
+        elif df['close'][i] < df['lowerband'][i-1]:
+            df['trend'][i] = False
+        else:
+            df['trend'][i] = df['trend'][i-1]
 
     return df
 
 
 def run_backtest():
-    global position, entry_price, balance
+    global capital, position, entry_price, position_size
 
     df = get_candles()
-    df = calculate_indicators(df)
+    df = supertrend(df)
 
     wins = 0
     losses = 0
 
-    for i in range(30, len(df)):
+    for i in range(20, len(df)):
         row = df.iloc[i]
         price = row['close']
 
-        # ✅ BUY (UPDATED STRATEGY)
-        if (row['ema9'] > row['ema21'] and row['rsi'] > 55 and row['close'] > row['ema21'] and position is None):
+        # BUY
+        if row['trend'] == True and position is None:
             position = "BUY"
             entry_price = price
+            position_size = capital * 0.1   # 10% capital
 
-        # ✅ SELL (UPDATED STRATEGY)
-        elif (row['ema9'] < row['ema21'] and row['rsi'] < 45 and position == "BUY"):
-            pnl = price - entry_price
+        # SELL
+        elif row['trend'] == False and position == "BUY":
+            pnl = (price - entry_price) / entry_price * position_size
+            capital += pnl
             trades.append(pnl)
-            balance += pnl
 
             if pnl > 0:
                 wins += 1
@@ -84,26 +87,7 @@ def run_backtest():
 
             position = None
 
-        # ✅ SL / TARGET (UPDATED)
-        if position == "BUY":
-            # Stop Loss 1.2%
-            if price <= entry_price * (1 - 0.012):
-                pnl = price - entry_price
-                trades.append(pnl)
-                balance += pnl
-                losses += 1
-                position = None
-
-            # Target 2%
-            elif price >= entry_price * (1 + 0.02):
-                pnl = price - entry_price
-                trades.append(pnl)
-                balance += pnl
-                wins += 1
-                position = None
-
-    # RESULTS
-    print("\n===== BACKTEST RESULT =====")
+    print("\n===== SUPER TREND RESULT =====")
     print("Total Trades:", len(trades))
     print("Wins:", wins)
     print("Losses:", losses)
@@ -111,10 +95,8 @@ def run_backtest():
     if len(trades) > 0:
         print("Win Rate:", (wins / len(trades)) * 100)
 
-    print("Final Balance:", balance)
-    print("Total P/L:", sum(trades))
+    print("Final Capital:", capital)
+    print("Total Profit:", capital - 100)
 
 
-# ===== RUN =====
-if MODE == "BACKTEST":
-    run_backtest()
+run_backtest()
