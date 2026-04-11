@@ -5,14 +5,13 @@ import pandas as pd
 BASE_URL = "https://api.delta.exchange"
 
 SYMBOL = "BTCUSDT"
-QTY = 1
 
-MODE = "BACKTEST"   # change to LIVE later
+MODE = "BACKTEST"   # keep BACKTEST for now
 
 position = None
 entry_price = 0
 trades = []
-balance = 1000  # starting capital
+balance = 1000
 
 
 def get_candles():
@@ -67,13 +66,13 @@ def run_backtest():
         row = df.iloc[i]
         price = row['close']
 
-        # BUY
-        if (row['ema9'] > row['ema21'] and row['rsi'] > 50 and position is None):
+        # ✅ BUY (UPDATED STRATEGY)
+        if (row['ema9'] > row['ema21'] and row['rsi'] > 55 and row['close'] > row['ema21'] and position is None):
             position = "BUY"
             entry_price = price
 
-        # SELL (opposite)
-        elif (row['ema9'] < row['ema21'] and row['rsi'] < 50 and position == "BUY"):
+        # ✅ SELL (UPDATED STRATEGY)
+        elif (row['ema9'] < row['ema21'] and row['rsi'] < 45 and position == "BUY"):
             pnl = price - entry_price
             trades.append(pnl)
             balance += pnl
@@ -85,16 +84,18 @@ def run_backtest():
 
             position = None
 
-        # SL / TARGET
+        # ✅ SL / TARGET (UPDATED)
         if position == "BUY":
-            if price <= entry_price * (1 - 0.015):
+            # Stop Loss 1.2%
+            if price <= entry_price * (1 - 0.012):
                 pnl = price - entry_price
                 trades.append(pnl)
                 balance += pnl
                 losses += 1
                 position = None
 
-            elif price >= entry_price * (1 + 0.03):
+            # Target 2%
+            elif price >= entry_price * (1 + 0.02):
                 pnl = price - entry_price
                 trades.append(pnl)
                 balance += pnl
@@ -106,60 +107,14 @@ def run_backtest():
     print("Total Trades:", len(trades))
     print("Wins:", wins)
     print("Losses:", losses)
-    print("Win Rate:", (wins / len(trades)) * 100 if trades else 0)
+
+    if len(trades) > 0:
+        print("Win Rate:", (wins / len(trades)) * 100)
+
     print("Final Balance:", balance)
     print("Total P/L:", sum(trades))
 
 
-def run_live():
-    global position, entry_price
-
-    while True:
-        try:
-            df = get_candles()
-
-            if df.empty or len(df) < 30:
-                print("Waiting for data...")
-                time.sleep(60)
-                continue
-
-            df = calculate_indicators(df)
-
-            last = df.iloc[-1]
-            price = last['close']
-
-            print(f"[{position if position else 'NO POSITION'}] Price: {price:.2f} | RSI: {last['rsi']:.2f}")
-
-            # BUY
-            if (last['ema9'] > last['ema21'] and last['rsi'] > 50 and position is None):
-                print("BUY SIGNAL")
-                position = "BUY"
-                entry_price = price
-
-            # SELL
-            elif (last['ema9'] < last['ema21'] and last['rsi'] < 50 and position == "BUY"):
-                print("SELL SIGNAL")
-                position = None
-
-            # SL / TARGET
-            if position == "BUY":
-                if price <= entry_price * (1 - 0.015):
-                    print("STOP LOSS HIT")
-                    position = None
-
-                elif price >= entry_price * (1 + 0.03):
-                    print("TARGET HIT")
-                    position = None
-
-            time.sleep(60)
-
-        except Exception as e:
-            print("ERROR:", e)
-            time.sleep(60)
-
-
-# ===== MAIN =====
+# ===== RUN =====
 if MODE == "BACKTEST":
     run_backtest()
-else:
-    run_live()
