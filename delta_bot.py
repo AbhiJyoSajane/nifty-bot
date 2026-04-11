@@ -7,41 +7,37 @@ BASE_URL = "https://api.delta.exchange"
 SYMBOL = "BTCUSDT"
 QTY = 1
 
+MODE = "BACKTEST"   # change to LIVE later
+
 position = None
 entry_price = 0
+trades = []
+balance = 1000  # starting capital
 
 
 def get_candles():
-    try:
-        end = int(time.time())
-        start = end - (60 * 60 * 5)  # last 5 hours
+    end = int(time.time())
+    start = end - (60 * 60 * 24 * 5)  # last 5 days
 
-        url = f"{BASE_URL}/v2/history/candles"
+    url = f"{BASE_URL}/v2/history/candles"
 
-        params = {
-            "symbol": SYMBOL,
-            "resolution": "5m",
-            "start": start,
-            "end": end
-        }
+    params = {
+        "symbol": SYMBOL,
+        "resolution": "5m",
+        "start": start,
+        "end": end
+    }
 
-        res = requests.get(url, params=params).json()
+    res = requests.get(url, params=params).json()
 
-        if 'result' not in res:
-            print("Candle API Error:", res)
-            return pd.DataFrame()
-
-        df = pd.DataFrame(res['result'])
-
-        if df.empty:
-            return df
-
-        df['close'] = df['close'].astype(float)
-        return df
-
-    except Exception as e:
-        print("Candle Error:", e)
+    if 'result' not in res:
+        print("API Error:", res)
         return pd.DataFrame()
+
+    df = pd.DataFrame(res['result'])
+    df['close'] = df['close'].astype(float)
+
+    return df
 
 
 def calculate_indicators(df):
@@ -58,45 +54,112 @@ def calculate_indicators(df):
     return df
 
 
-while True:
-    try:
-        df = get_candles()
+def run_backtest():
+    global position, entry_price, balance
 
-        if df.empty or len(df) < 30:
-            print("Waiting for data...")
-            time.sleep(60)
-            continue
+    df = get_candles()
+    df = calculate_indicators(df)
 
-        df = calculate_indicators(df)
+    wins = 0
+    losses = 0
 
-        last = df.iloc[-1]
-        price = last['close']
+    for i in range(30, len(df)):
+        row = df.iloc[i]
+        price = row['close']
 
-        print(f"[{position if position else 'NO POSITION'}] Price: {price:.2f} | RSI: {last['rsi']:.2f}")
-
-        # ✅ BUY CONDITION (UPDATED)
-        if (last['ema9'] > last['ema21'] and last['rsi'] > 50 and position is None):
-            print("BUY SIGNAL")
+        # BUY
+        if (row['ema9'] > row['ema21'] and row['rsi'] > 50 and position is None):
             position = "BUY"
             entry_price = price
 
-        # ✅ SELL CONDITION (UPDATED)
-        elif (last['ema9'] < last['ema21'] and last['rsi'] < 50 and position == "BUY"):
-            print("SELL SIGNAL (Opposite)")
+        # SELL (opposite)
+        elif (row['ema9'] < row['ema21'] and row['rsi'] < 50 and position == "BUY"):
+            pnl = price - entry_price
+            trades.append(pnl)
+            balance += pnl
+
+            if pnl > 0:
+                wins += 1
+            else:
+                losses += 1
+
             position = None
 
-        # ✅ STOP LOSS / TARGET
+        # SL / TARGET
         if position == "BUY":
             if price <= entry_price * (1 - 0.015):
-                print("STOP LOSS HIT")
+                pnl = price - entry_price
+                trades.append(pnl)
+                balance += pnl
+                losses += 1
                 position = None
 
             elif price >= entry_price * (1 + 0.03):
-                print("TARGET HIT")
+                pnl = price - entry_price
+                trades.append(pnl)
+                balance += pnl
+                wins += 1
                 position = None
 
-        time.sleep(60)
+    # RESULTS
+    print("\n===== BACKTEST RESULT =====")
+    print("Total Trades:", len(trades))
+    print("Wins:", wins)
+    print("Losses:", losses)
+    print("Win Rate:", (wins / len(trades)) * 100 if trades else 0)
+    print("Final Balance:", balance)
+    print("Total P/L:", sum(trades))
 
-    except Exception as e:
-        print("MAIN ERROR:", e)
-        time.sleep(60)
+
+def run_live():
+    global position, entry_price
+
+    while True:
+        try:
+            df = get_candles()
+
+            if df.empty or len(df) < 30:
+                print("Waiting for data...")
+                time.sleep(60)
+                continue
+
+            df = calculate_indicators(df)
+
+            last = df.iloc[-1]
+            price = last['close']
+
+            print(f"[{position if position else 'NO POSITION'}] Price: {price:.2f} | RSI: {last['rsi']:.2f}")
+
+            # BUY
+            if (last['ema9'] > last['ema21'] and last['rsi'] > 50 and position is None):
+                print("BUY SIGNAL")
+                position = "BUY"
+                entry_price = price
+
+            # SELL
+            elif (last['ema9'] < last['ema21'] and last['rsi'] < 50 and position == "BUY"):
+                print("SELL SIGNAL")
+                position = None
+
+            # SL / TARGET
+            if position == "BUY":
+                if price <= entry_price * (1 - 0.015):
+                    print("STOP LOSS HIT")
+                    position = None
+
+                elif price >= entry_price * (1 + 0.03):
+                    print("TARGET HIT")
+                    position = None
+
+            time.sleep(60)
+
+        except Exception as e:
+            print("ERROR:", e)
+            time.sleep(60)
+
+
+# ===== MAIN =====
+if MODE == "BACKTEST":
+    run_backtest()
+else:
+    run_live()
