@@ -17,13 +17,13 @@ def get_candles():
     end = int(time.time())
     all_data = []
 
-    for i in range(6):
-        start = end - (60 * 60 * 24 * 5)
+    for i in range(5):  # slightly less chunks (3m gives more candles)
+        start = end - (60 * 60 * 24 * 3)  # 3 days
 
         url = f"{BASE_URL}/v2/history/candles"
         params = {
             "symbol": SYMBOL,
-            "resolution": "5m",
+            "resolution": "3m",  # ✅ 3 minute timeframe
             "start": start,
             "end": end
         }
@@ -93,13 +93,13 @@ def run_backtest():
         row = df.iloc[i]
         price = row['close']
 
-        # ✅ BUY with EMA filter
+        # BUY (Supertrend + EMA filter)
         if row['trend'] and price > row['ema200'] and position is None:
             position = "BUY"
             entry_price = price
             position_size = capital * 0.1
 
-        # ✅ SELL
+        # SELL
         elif not row['trend'] and position == "BUY":
             pnl = (price - entry_price) / entry_price * position_size
             capital += pnl
@@ -112,7 +112,7 @@ def run_backtest():
 
             position = None
 
-    print("\n===== EMA FILTER RESULT =====")
+    print("\n===== 3M RESULT =====")
     print("Total Trades:", len(trades))
     print("Wins:", wins)
     print("Losses:", losses)
