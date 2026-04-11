@@ -17,13 +17,13 @@ def get_candles():
     end = int(time.time())
     all_data = []
 
-    for i in range(5):  # slightly less chunks (3m gives more candles)
-        start = end - (60 * 60 * 24 * 3)  # 3 days
+    for i in range(12):  # more loops for 3m data
+        start = end - (60 * 60 * 6)  # 6 hours chunk
 
         url = f"{BASE_URL}/v2/history/candles"
         params = {
             "symbol": SYMBOL,
-            "resolution": "3m",  # ✅ 3 minute timeframe
+            "resolution": "3m",
             "start": start,
             "end": end
         }
@@ -31,14 +31,24 @@ def get_candles():
         res = requests.get(url, params=params).json()
 
         if 'result' not in res:
+            print("API Error:", res)
             break
 
-        all_data.extend(res['result'])
-        end = start
+        data = res['result']
+        all_data.extend(data)
+
+        end = start  # move backward
 
     df = pd.DataFrame(all_data)
+
+    if df.empty:
+        print("No data fetched")
+        return df
+
     df[['open','high','low','close']] = df[['open','high','low','close']].astype(float)
-    df = df.sort_values(by='time').reset_index(drop=True)
+
+    # sort + remove duplicates
+    df = df.sort_values(by='time').drop_duplicates().reset_index(drop=True)
 
     print("Total candles:", len(df))
     return df
@@ -93,7 +103,7 @@ def run_backtest():
         row = df.iloc[i]
         price = row['close']
 
-        # BUY (Supertrend + EMA filter)
+        # BUY
         if row['trend'] and price > row['ema200'] and position is None:
             position = "BUY"
             entry_price = price
@@ -112,7 +122,7 @@ def run_backtest():
 
             position = None
 
-    print("\n===== 3M RESULT =====")
+    print("\n===== FINAL 3M RESULT =====")
     print("Total Trades:", len(trades))
     print("Wins:", wins)
     print("Losses:", losses)
