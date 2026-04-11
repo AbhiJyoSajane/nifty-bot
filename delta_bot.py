@@ -27,10 +27,6 @@ def get_candles():
 
     res = requests.get(url, params=params).json()
 
-    if 'result' not in res:
-        print("API Error:", res)
-        return pd.DataFrame()
-
     df = pd.DataFrame(res['result'])
     df[['open','high','low','close']] = df[['open','high','low','close']].astype(float)
 
@@ -38,7 +34,7 @@ def get_candles():
 
 
 def supertrend(df, period=10, multiplier=3):
-    hl2 = (df['high'] + df['low']) / 2
+    df['hl2'] = (df['high'] + df['low']) / 2
 
     df['tr'] = np.maximum(df['high'] - df['low'],
                          np.maximum(abs(df['high'] - df['close'].shift()),
@@ -46,18 +42,37 @@ def supertrend(df, period=10, multiplier=3):
 
     df['atr'] = df['tr'].rolling(period).mean()
 
-    df['upperband'] = hl2 + (multiplier * df['atr'])
-    df['lowerband'] = hl2 - (multiplier * df['atr'])
+    df['upperband'] = df['hl2'] + multiplier * df['atr']
+    df['lowerband'] = df['hl2'] - multiplier * df['atr']
+
+    df['final_upperband'] = df['upperband']
+    df['final_lowerband'] = df['lowerband']
 
     df['trend'] = True
 
     for i in range(1, len(df)):
-        if df['close'].iloc[i] > df['upperband'].iloc[i-1]:
-            df.loc[i, 'trend'] = True
-        elif df['close'].iloc[i] < df['lowerband'].iloc[i-1]:
-            df.loc[i, 'trend'] = False
+        # carry forward bands
+        if df['upperband'].iloc[i] < df['final_upperband'].iloc[i-1] or df['close'].iloc[i-1] > df['final_upperband'].iloc[i-1]:
+            df.loc[i, 'final_upperband'] = df['upperband'].iloc[i]
         else:
-            df.loc[i, 'trend'] = df['trend'].iloc[i-1]
+            df.loc[i, 'final_upperband'] = df['final_upperband'].iloc[i-1]
+
+        if df['lowerband'].iloc[i] > df['final_lowerband'].iloc[i-1] or df['close'].iloc[i-1] < df['final_lowerband'].iloc[i-1]:
+            df.loc[i, 'final_lowerband'] = df['lowerband'].iloc[i]
+        else:
+            df.loc[i, 'final_lowerband'] = df['final_lowerband'].iloc[i-1]
+
+        # trend decision
+        if df['trend'].iloc[i-1] == True:
+            if df['close'].iloc[i] < df['final_lowerband'].iloc[i]:
+                df.loc[i, 'trend'] = False
+            else:
+                df.loc[i, 'trend'] = True
+        else:
+            if df['close'].iloc[i] > df['final_upperband'].iloc[i]:
+                df.loc[i, 'trend'] = True
+            else:
+                df.loc[i, 'trend'] = False
 
     return df
 
@@ -66,11 +81,6 @@ def run_backtest():
     global capital, position, entry_price, position_size
 
     df = get_candles()
-
-    if df.empty:
-        print("No data fetched")
-        return
-
     df = supertrend(df)
 
     wins = 0
@@ -84,7 +94,7 @@ def run_backtest():
         if row['trend'] == True and position is None:
             position = "BUY"
             entry_price = price
-            position_size = capital * 0.1  # 10% capital
+            position_size = capital * 0.1
 
         # SELL
         elif row['trend'] == False and position == "BUY":
