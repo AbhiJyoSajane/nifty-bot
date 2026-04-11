@@ -10,15 +10,19 @@ API_KEY = os.environ.get("API_KEY")
 API_SECRET = os.environ.get("API_SECRET")
 REQUEST_TOKEN = os.environ.get("REQUEST_TOKEN")
 
+LOT_SIZE = 65   # 🔴 UPDATE THIS AS PER CURRENT LOT SIZE
+START_CAPITAL = 20000
+MAX_DAILY_LOSS = 2000
+MAX_TRADES_PER_DAY = 5
+
 kite = KiteConnect(api_key=API_KEY)
 
 # =====================
-# GENERATE ACCESS TOKEN (ONCE)
+# TOKEN GENERATION
 # =====================
 try:
     session = kite.generate_session(REQUEST_TOKEN, api_secret=API_SECRET)
-    access_token = session["access_token"]
-    kite.set_access_token(access_token)
+    kite.set_access_token(session["access_token"])
     print("✅ Access Token Generated")
 except Exception as e:
     print("❌ Token Error:", e)
@@ -28,14 +32,13 @@ except Exception as e:
 # VERIFY LOGIN
 # =====================
 try:
-    profile = kite.profile()
-    print("✅ Login Verified:", profile["user_name"])
-except Exception as e:
-    print("❌ Invalid Token:", e)
+    print("👤", kite.profile()["user_name"])
+except:
+    print("❌ Login Failed")
     exit()
 
 # =====================
-# LOAD INSTRUMENTS ONCE
+# LOAD INSTRUMENTS
 # =====================
 print("📦 Loading instruments...")
 instruments = kite.instruments("NFO")
@@ -77,50 +80,44 @@ def get_atm(price):
 def get_option_data(token, from_date):
     to_date = from_date + timedelta(days=1)
 
-    data = kite.historical_data(
-        token,
-        from_date,
-        to_date,
-        "5minute"
-    )
-
+    data = kite.historical_data(token, from_date, to_date, "5minute")
     df = pd.DataFrame(data)
+
     if not df.empty:
         df['date'] = pd.to_datetime(df['date'])
 
     return df
 
 # =====================
-# STRATEGY (REAL LOGIC)
+# STRATEGY
 # =====================
 def run_strategy(df):
-    capital = 20000
-    max_daily_loss = 2000
-    max_trades = 5
-
-    trades = []
+    capital = START_CAPITAL
 
     current_day = None
     daily_loss = 0
     trade_count = 0
 
+    trades = []
+
     for i in range(2, len(df)):
         row_date = df.iloc[i]['date'].date()
 
-        # Reset each day
+        # Reset new day
         if current_day != row_date:
             current_day = row_date
             daily_loss = 0
             trade_count = 0
 
-        if daily_loss >= max_daily_loss or trade_count >= max_trades:
+        # Risk controls
+        if daily_loss >= MAX_DAILY_LOSS or trade_count >= MAX_TRADES_PER_DAY:
             continue
 
         prev = df.iloc[i-1]
         prev2 = df.iloc[i-2]
         curr = df.iloc[i]
 
-        # Inside candle
+        # Inside Candle
         inside = prev['high'] < prev2['high'] and prev['low'] > prev2['low']
         if not inside:
             continue
@@ -152,15 +149,15 @@ def run_strategy(df):
 
         entry = option_df.iloc[0]['close']
 
-        # SL & TARGET (Ananth Ladha logic)
+        # 🔥 SL & TARGET (Ananth Ladha style)
         sl = entry * 0.8
         target = entry * 1.4
 
-        risk_per_lot = entry - sl
-        if risk_per_lot <= 0:
-            continue
+        # 🔥 CAPITAL CHECK (VERY IMPORTANT)
+        cost = entry * LOT_SIZE
 
-        qty = int(max_daily_loss / risk_per_lot)
+        if cost > capital:
+            continue   # skip if not enough money
 
         result = 0
 
@@ -169,11 +166,11 @@ def run_strategy(df):
             low = option_df.iloc[j]['low']
 
             if low <= sl:
-                result = -risk_per_lot * qty
+                result = -(entry - sl) * LOT_SIZE
                 break
 
             if high >= target:
-                result = (target - entry) * qty
+                result = (target - entry) * LOT_SIZE
                 break
 
         capital += result
@@ -187,7 +184,7 @@ def run_strategy(df):
             "type": direction,
             "strike": strike,
             "entry": float(entry),
-            "qty": qty,
+            "lot": 1,
             "pnl": round(result, 2),
             "capital": round(capital, 2)
         })
