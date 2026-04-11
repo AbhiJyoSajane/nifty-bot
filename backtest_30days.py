@@ -65,14 +65,11 @@ def supertrend(df, period=10, multiplier=3):
 
 df = supertrend(df)
 
-# ================= SIDEWAYS FILTER =================
-df['range'] = df['high'] - df['low']
-
 # ================= BACKTEST =================
 position = None
 entry_price = 0
 
-total_pnl = 0
+total_points = 0
 wins = 0
 losses = 0
 trade_count = 0
@@ -84,13 +81,11 @@ current_day = None
 for i in range(20, len(df)):
 
     row = df.iloc[i]
-    prev = df.iloc[i-1]
-
     price = row['close']
     st = row['supertrend']
     date = row['date'].date()
 
-    # ===== RESET =====
+    # ===== RESET DAILY =====
     if current_day != date:
         current_day = date
         daily_pnl = 0
@@ -104,21 +99,16 @@ for i in range(20, len(df)):
     if daily_pnl <= MAX_DAILY_LOSS:
         continue
 
-    # ===== SIDEWAYS FILTER =====
-    avg_range = df['range'].rolling(10).mean().iloc[i]
-    if avg_range < 20:
-        continue
-
     # ===== ENTRY =====
     if position is None:
 
         # BUY
-        if row['trend'] == True and prev['trend'] == False:
+        if row['trend'] == True and price > st:
             position = "BUY"
             entry_price = price
 
         # SELL
-        elif row['trend'] == False and prev['trend'] == True:
+        elif row['trend'] == False and price < st:
             position = "SELL"
             entry_price = price
 
@@ -127,17 +117,18 @@ for i in range(20, len(df)):
 
         exit_trade = False
 
-        # 🔥 DYNAMIC SL using Supertrend
+        # BUY EXIT
         if position == "BUY" and price < st:
             pnl = price - entry_price
             exit_trade = True
 
+        # SELL EXIT
         elif position == "SELL" and price > st:
             pnl = entry_price - price
             exit_trade = True
 
         if exit_trade:
-            total_pnl += pnl
+            total_points += pnl
             capital += pnl
             daily_pnl += pnl
 
@@ -152,11 +143,11 @@ for i in range(20, len(df)):
             position = None
 
 # ================= RESULT =================
-print("\n📊 SUPERTREND DYNAMIC STRATEGY\n")
+print("\n📊 SUPERTREND CLEAN STRATEGY\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
-print(f"Total Points: {round(total_pnl,2)}")
+print(f"Total Points: {round(total_points,2)}")
 
 print(f"\nTrades: {trade_count}")
 print(f"Wins: {wins} | Losses: {losses}")
