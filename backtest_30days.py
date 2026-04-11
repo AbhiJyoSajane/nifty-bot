@@ -1,223 +1,87 @@
-import os
 import pandas as pd
+import numpy as np
 from kiteconnect import KiteConnect
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 
-# =====================
-# CONFIG
-# =====================
-API_KEY = os.environ.get("API_KEY")
-API_SECRET = os.environ.get("API_SECRET")
-REQUEST_TOKEN = os.environ.get("REQUEST_TOKEN")
+# --- CONFIGURATION ---
+API_KEY = "your_api_key"
+ACCESS_TOKEN = "your_access_token"  # Generated via your login flow
+STOP_LOSS_PCT = 0.25               # 25% SL on each leg
+ENTRY_TIME = "09:20:00"
+EXIT_TIME = "15:10:00"
+LOT_SIZE = 50
 
-LOT_SIZE = 65
-START_CAPITAL = 20000
-MAX_DAILY_LOSS = 2000
-MAX_TRADES_PER_DAY = 5
-
-TARGET_POINTS = 40
-
+# Initialize Kite
 kite = KiteConnect(api_key=API_KEY)
+kite.set_access_token(ACCESS_TOKEN)
 
-# =====================
-# TOKEN
-# =====================
-try:
-    session = kite.generate_session(REQUEST_TOKEN, api_secret=API_SECRET)
-    kite.set_access_token(session["access_token"])
-    print("✅ Access Token Generated")
-except Exception as e:
-    print("❌ Token Error:", e)
-    exit()
-
-print("👤", kite.profile()["user_name"])
-
-# =====================
-# LOAD INSTRUMENTS
-# =====================
-print("📦 Loading instruments...")
-instruments = kite.instruments("NFO")
-
-def get_option_token(strike, option_type):
-    for ins in instruments:
-        if (
-            ins["name"] == "NIFTY" and
-            ins["strike"] == strike and
-            ins["instrument_type"] == option_type and
-            ins["expiry"] >= datetime.now().date()
-        ):
-            return ins["instrument_token"]
-    return None
-
-# =====================
-# FETCH NIFTY
-# =====================
-def get_nifty_data():
-    data = kite.historical_data(
-        256265,
-        datetime.now() - timedelta(days=5),
-        datetime.now(),
-        "5minute"
-    )
+def get_nifty_data(days=30):
+    """Fetches historical minute-level data for Nifty 50 Index"""
+    instruments = kite.instruments("NSE")
+    nifty_token = next(i['instrument_token'] for i in instruments if i['tradingsymbol'] == 'NIFTY 50')
+    
+    to_date = datetime.now()
+    from_date = to_date - timedelta(days=days)
+    
+    # Kite returns max 30 days of minute data in one call
+    data = kite.historical_data(nifty_token, from_date, to_date, "minute")
     df = pd.DataFrame(data)
-    df['date'] = pd.to_datetime(df['date'])
+    df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
     return df
 
-# =====================
-# EMA CALCULATION
-# =====================
-def add_ema(df):
-    df['ema50'] = df['close'].ewm(span=50).mean()
-    return df
+def run_backtest():
+    df = get_nifty_data(30)
+    df['day'] = df['date'].dt.date
+    results = []
 
-# =====================
-# ATM STRIKE
-# =====================
-def get_atm(price):
-    return round(price / 50) * 50
+    for day, day_df in df.groupby('day'):
+        # 1. Entry Logic at 09:20
+        entry_row = day_df[day_df['date'].dt.strftime('%H:%M:%S') == ENTRY_TIME]
+        if entry_row.empty: continue
+        
+        entry_price = entry_row.iloc[0]['close']
+        
+        # 2. Simulate Option Premiums
+        # At 9:20 AM, a 100-point OTM Nifty option is roughly 0.6% of Nifty value
+        initial_premium = (entry_price * 0.006) 
+        ce_price = pe_price = initial_premium
+        ce_sl = ce_price * (1 + STOP_LOSS_PCT)
+        pe_sl = pe_price * (1 + STOP_LOSS_PCT)
+        
+        ce_active = pe_active = True
+        day_pnl = 0
 
-# =====================
-# OPTION DATA
-# =====================
-def get_option_data(token, from_date):
-    to_date = from_date + timedelta(days=1)
-    data = kite.historical_data(token, from_date, to_date, "5minute")
+        # 3. Intraday Loop (Checking for SL triggers)
+        for _, row in day_df[day_df['date'].dt.strftime('%H:%M:%S') > ENTRY_TIME].iterrows():
+            # Calculate price change since entry
+            price_change = row['close'] - entry_price
+            
+            # Simulate Option Movement (Delta ~0.4 for near-OTM)
+            current_ce = initial_premium + (price_change * 0.4)
+            current_pe = initial_premium - (price_change * 0.4)
 
-    df = pd.DataFrame(data)
-    if not df.empty:
-        df['date'] = pd.to_datetime(df['date'])
+            # Check CE Stop Loss
+            if ce_active and current_ce >= ce_sl:
+                day_pnl -= (ce_sl - initial_premium)
+                ce_active = False
+            
+            # Check PE Stop Loss
+            if pe_active and current_pe >= pe_sl:
+                day_pnl -= (pe_sl - initial_premium)
+                pe_active = False
 
-    return df
-
-# =====================
-# STRATEGY
-# =====================
-def run_strategy(df):
-    capital = START_CAPITAL
-
-    current_day = None
-    daily_loss = 0
-    trade_count = 0
-
-    trades = []
-
-    for i in range(50, len(df)):  # start after EMA ready
-        curr_time = df.iloc[i]['date'].time()
-
-        # TIME FILTER
-        if not (time(9,30) <= curr_time <= time(12,30)):
-            continue
-
-        row_date = df.iloc[i]['date'].date()
-
-        # RESET DAY
-        if current_day != row_date:
-            current_day = row_date
-            daily_loss = 0
-            trade_count = 0
-
-        if daily_loss >= MAX_DAILY_LOSS or trade_count >= MAX_TRADES_PER_DAY:
-            continue
-
-        prev = df.iloc[i-1]
-        prev2 = df.iloc[i-2]
-        curr = df.iloc[i]
-
-        # INSIDE CANDLE
-        inside = prev['high'] < prev2['high'] and prev['low'] > prev2['low']
-        if not inside:
-            continue
-
-        mother_high = prev2['high']
-        mother_low = prev2['low']
-
-        price = curr['close']
-        ema = curr['ema50']
-
-        strike = get_atm(price)
-
-        direction = None
-
-        # EMA FILTER
-        if price > mother_high and price > ema:
-            direction = "CE"
-            sl_nifty = mother_low
-
-        elif price < mother_low and price < ema:
-            direction = "PE"
-            sl_nifty = mother_high
-
-        else:
-            continue
-
-        token = get_option_token(strike, direction)
-        if token is None:
-            continue
-
-        from_date = curr['date'].to_pydatetime()
-        option_df = get_option_data(token, from_date)
-
-        if option_df.empty:
-            continue
-
-        entry = option_df.iloc[0]['close']
-
-        # TARGET (premium)
-        target = entry + TARGET_POINTS
-
-        # CAPITAL CHECK
-        cost = entry * LOT_SIZE
-        if cost > capital:
-            continue
-
-        result = 0
-
-        for j in range(1, len(option_df)):
-            high = option_df.iloc[j]['high']
-            low = option_df.iloc[j]['low']
-
-            # Candle SL simulation (approx via premium drop)
-            if low <= entry - 20:   # fallback approx
-                result = -20 * LOT_SIZE
+            # Square off at 3:10 PM
+            if row['date'].strftime('%H:%M:%S') >= EXIT_TIME:
+                if ce_active: day_pnl += (initial_premium - current_ce)
+                if pe_active: day_pnl += (initial_premium - current_pe)
                 break
+        
+        results.append({'Date': day, 'PnL': day_pnl * LOT_SIZE})
 
-            if high >= target:
-                result = TARGET_POINTS * LOT_SIZE
-                break
+    return pd.DataFrame(results)
 
-        # STRICT DAILY SL CONTROL
-        if daily_loss + abs(result) > MAX_DAILY_LOSS:
-            continue
-
-        capital += result
-        trade_count += 1
-
-        if result < 0:
-            daily_loss += abs(result)
-
-        trades.append({
-            "date": str(row_date),
-            "type": direction,
-            "strike": strike,
-            "entry": float(entry),
-            "pnl": result,
-            "capital": capital
-        })
-
-    return trades, capital
-
-# =====================
-# RUN
-# =====================
-if __name__ == "__main__":
-    df = get_nifty_data()
-    df = add_ema(df)
-
-    trades, capital = run_strategy(df)
-
-    print("\n📊 FINAL RESULT")
-    print("Total Trades:", len(trades))
-    print("Final Capital:", capital)
-
-    for t in trades[-5:]:
-        print(t)
+# --- EXECUTION ---
+report = run_backtest()
+print(report)
+print(f"\nTotal Net Profit: Rs. {report['PnL'].sum():.2f}")
+print(f"Win Rate: {(report['PnL'] > 0).mean() * 100:.2f}%")
