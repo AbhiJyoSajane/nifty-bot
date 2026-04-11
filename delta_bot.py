@@ -17,7 +17,7 @@ def get_candles():
     end = int(time.time())
     all_data = []
 
-    for i in range(6):  # fetch multiple chunks
+    for i in range(6):
         start = end - (60 * 60 * 24 * 5)
 
         url = f"{BASE_URL}/v2/history/candles"
@@ -31,21 +31,21 @@ def get_candles():
         res = requests.get(url, params=params).json()
 
         if 'result' not in res:
-            print("API Error:", res)
             break
 
-        data = res['result']
-        all_data.extend(data)
-
-        end = start  # move backward
+        all_data.extend(res['result'])
+        end = start
 
     df = pd.DataFrame(all_data)
     df[['open','high','low','close']] = df[['open','high','low','close']].astype(float)
-
     df = df.sort_values(by='time').reset_index(drop=True)
 
-    print("Total candles:", len(df))  # debug
+    print("Total candles:", len(df))
+    return df
 
+
+def calculate_ema(df):
+    df['ema200'] = df['close'].ewm(span=200).mean()
     return df
 
 
@@ -79,24 +79,27 @@ def run_backtest():
 
     df = get_candles()
 
-    if len(df) < 100:
+    if len(df) < 200:
         print("Not enough data")
         return
 
+    df = calculate_ema(df)
     df = supertrend(df)
 
     wins = 0
     losses = 0
 
-    for i in range(20, len(df)):
+    for i in range(200, len(df)):
         row = df.iloc[i]
         price = row['close']
 
-        if row['trend'] and position is None:
+        # ✅ BUY with EMA filter
+        if row['trend'] and price > row['ema200'] and position is None:
             position = "BUY"
             entry_price = price
             position_size = capital * 0.1
 
+        # ✅ SELL
         elif not row['trend'] and position == "BUY":
             pnl = (price - entry_price) / entry_price * position_size
             capital += pnl
@@ -109,7 +112,7 @@ def run_backtest():
 
             position = None
 
-    print("\n===== RESULT =====")
+    print("\n===== EMA FILTER RESULT =====")
     print("Total Trades:", len(trades))
     print("Wins:", wins)
     print("Losses:", losses)
