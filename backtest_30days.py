@@ -12,7 +12,6 @@ REQUEST_TOKEN = os.environ.get("REQUEST_TOKEN")
 
 kite = KiteConnect(api_key=API_KEY)
 
-# Generate access token
 session = kite.generate_session(REQUEST_TOKEN, api_secret=API_SECRET)
 kite.set_access_token(session["access_token"])
 
@@ -36,97 +35,108 @@ def get_nifty_data():
     return pd.DataFrame(data)
 
 # =====================
-# GET ATM STRIKE
+# ATM STRIKE
 # =====================
-def get_atm_strike(price):
+def get_atm(price):
     return round(price / 50) * 50
+
+# =====================
+# GET OPTION TOKEN
+# =====================
+def get_option_token(strike, option_type):
+    instruments = kite.instruments("NFO")
+
+    for ins in instruments:
+        if (
+            ins["name"] == "NIFTY" and
+            ins["strike"] == strike and
+            ins["instrument_type"] == option_type and
+            ins["expiry"] > datetime.now().date()
+        ):
+            return ins["instrument_token"]
+
+    return None
+
+# =====================
+# FETCH OPTION DATA
+# =====================
+def get_option_data(token, from_date, to_date):
+    data = kite.historical_data(token, from_date, to_date, "5minute")
+    return pd.DataFrame(data)
 
 # =====================
 # STRATEGY
 # =====================
-def option_strategy(df):
+def run_strategy(df):
     capital = 20000
-    daily_loss = 0
-    max_loss = 2000
-    max_trades = 5
-
     trades = []
 
     for i in range(2, len(df)):
-        trade_count = 0
-
         prev = df.iloc[i-1]
         prev2 = df.iloc[i-2]
         curr = df.iloc[i]
-
-        # New day reset
-        if i > 2 and df.iloc[i]['date'].date() != df.iloc[i-1]['date'].date():
-            daily_loss = 0
-            trade_count = 0
-
-        # Stop conditions
-        if daily_loss >= max_loss or trade_count >= max_trades:
-            continue
 
         inside = prev['high'] < prev2['high'] and prev['low'] > prev2['low']
 
         if not inside:
             continue
 
-        mother_high = prev2['high']
-        mother_low = prev2['low']
-
         price = curr['close']
-        strike = get_atm_strike(price)
+        strike = get_atm(price)
 
-        # ===== BUY CE =====
-        if price > mother_high:
-            trade_count += 1
+        direction = None
 
-            entry_price = 100  # assumed premium
-            sl = entry_price - 20
-            target = entry_price + 40
+        if price > prev2['high']:
+            direction = "CE"
+        elif price < prev2['low']:
+            direction = "PE"
+        else:
+            continue
 
-            result = 40 if True else -20  # simplified
+        token = get_option_token(strike, direction)
 
-            pnl = 400 if result > 0 else -200
-            capital += pnl
+        if token is None:
+            continue
 
-            if pnl < 0:
-                daily_loss += abs(pnl)
+        option_df = get_option_data(
+            token,
+            curr['date'],
+            curr['date'] + timedelta(days=1)
+        )
 
-            trades.append({
-                "type": "CE",
-                "strike": strike,
-                "pnl": pnl,
-                "capital": capital
-            })
+        if option_df.empty:
+            continue
 
-        # ===== BUY PE =====
-        elif price < mother_low:
-            trade_count += 1
+        entry = option_df.iloc[0]['close']
 
-            entry_price = 100
-            sl = entry_price - 20
-            target = entry_price + 40
+        sl = entry * 0.8        # 20% SL
+        target = entry * 1.4    # 40% target (1:2 RR)
 
-            result = 40 if True else -20
+        result = 0
 
-            pnl = 400 if result > 0 else -200
-            capital += pnl
+        for j in range(1, len(option_df)):
+            high = option_df.iloc[j]['high']
+            low = option_df.iloc[j]['low']
 
-            if pnl < 0:
-                daily_loss += abs(pnl)
+            if low <= sl:
+                result = -200
+                break
 
-            trades.append({
-                "type": "PE",
-                "strike": strike,
-                "pnl": pnl,
-                "capital": capital
-            })
+            if high >= target:
+                result = 400
+                break
+
+        capital += result
+
+        trades.append({
+            "type": direction,
+            "strike": strike,
+            "entry": entry,
+            "pnl": result,
+            "capital": capital
+        })
 
     return trades, capital
-
 
 # =====================
 # RUN
@@ -134,11 +144,12 @@ def option_strategy(df):
 if __name__ == "__main__":
     df = get_nifty_data()
 
-    trades, capital = option_strategy(df)
+    trades, capital = run_strategy(df)
 
-    print("\n📊 RESULT")
+    print("\n📊 REAL OPTION BACKTEST")
     print("Total Trades:", len(trades))
     print("Final Capital:", capital)
 
-    for t in trades[-5:]:
-        print(t)
+    if trades:
+        for t in trades[-5:]:
+            print(t)
