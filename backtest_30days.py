@@ -7,26 +7,16 @@ from datetime import datetime, timedelta
 # CONFIG
 # =====================
 API_KEY = os.environ.get("API_KEY")
-API_SECRET = os.environ.get("API_SECRET")
-REQUEST_TOKEN = os.environ.get("REQUEST_TOKEN")
+ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN")
 
 kite = KiteConnect(api_key=API_KEY)
+kite.set_access_token(ACCESS_TOKEN)
+
+print("✅ Connected")
 
 # =====================
-# GENERATE ACCESS TOKEN
+# LOAD INSTRUMENTS
 # =====================
-try:
-    session = kite.generate_session(REQUEST_TOKEN, api_secret=API_SECRET)
-    kite.set_access_token(session["access_token"])
-    print("✅ Access Token Generated")
-except Exception as e:
-    print("❌ Token Error:", e)
-    exit()
-
-# =====================
-# LOAD INSTRUMENTS ONCE
-# =====================
-print("📦 Loading instruments...")
 instruments = kite.instruments("NFO")
 
 def get_option_token(strike, option_type):
@@ -41,7 +31,7 @@ def get_option_token(strike, option_type):
     return None
 
 # =====================
-# FETCH NIFTY DATA
+# FETCH NIFTY
 # =====================
 def get_nifty_data():
     data = kite.historical_data(
@@ -55,7 +45,7 @@ def get_nifty_data():
     return df
 
 # =====================
-# GET ATM STRIKE
+# ATM STRIKE
 # =====================
 def get_atm(price):
     return round(price / 50) * 50
@@ -66,14 +56,9 @@ def get_atm(price):
 def get_option_data(token, from_date):
     to_date = from_date + timedelta(days=1)
 
-    data = kite.historical_data(
-        token,
-        from_date,
-        to_date,
-        "5minute"
-    )
-
+    data = kite.historical_data(token, from_date, to_date, "5minute")
     df = pd.DataFrame(data)
+
     if not df.empty:
         df['date'] = pd.to_datetime(df['date'])
 
@@ -84,25 +69,24 @@ def get_option_data(token, from_date):
 # =====================
 def run_strategy(df):
     capital = 20000
-    daily_loss = 0
     max_daily_loss = 2000
     max_trades = 5
 
     trades = []
 
     current_day = None
+    daily_loss = 0
     trade_count = 0
 
     for i in range(2, len(df)):
         row_date = df.iloc[i]['date'].date()
 
-        # NEW DAY RESET
+        # Reset per day
         if current_day != row_date:
             current_day = row_date
             daily_loss = 0
             trade_count = 0
 
-        # STOP CONDITIONS
         if daily_loss >= max_daily_loss or trade_count >= max_trades:
             continue
 
@@ -110,20 +94,36 @@ def run_strategy(df):
         prev2 = df.iloc[i-2]
         curr = df.iloc[i]
 
-        # INSIDE CANDLE
+        # Inside Candle
         inside = prev['high'] < prev2['high'] and prev['low'] > prev2['low']
         if not inside:
             continue
+
+        mother_high = prev2['high']
+        mother_low = prev2['low']
 
         price = curr['close']
         strike = get_atm(price)
 
         direction = None
-        if price > prev2['high']:
+
+        if price > mother_high:
             direction = "CE"
-        elif price < prev2['low']:
+            sl_nifty = mother_low
+            entry_nifty = price
+
+        elif price < mother_low:
             direction = "PE"
+            sl_nifty = mother_high
+            entry_nifty = price
+
         else:
+            continue
+
+        # Risk in NIFTY
+        risk_nifty = abs(entry_nifty - sl_nifty)
+
+        if risk_nifty == 0:
             continue
 
         token = get_option_token(strike, direction)
@@ -136,11 +136,18 @@ def run_strategy(df):
         if option_df.empty:
             continue
 
-        entry = option_df.iloc[0]['close']
+        entry_option = option_df.iloc[0]['close']
 
-        # SL & TARGET (Ananth Ladha style)
-        sl = entry * 0.8
-        target = entry * 1.4
+        # Convert risk into option move (approx ratio)
+        sl_option = entry_option * 0.8
+        target_option = entry_option * 1.4
+
+        # Position sizing based on ₹2000 risk
+        risk_per_lot = entry_option - sl_option
+        if risk_per_lot <= 0:
+            continue
+
+        qty = int(max_daily_loss / risk_per_lot)
 
         result = 0
 
@@ -148,15 +155,14 @@ def run_strategy(df):
             high = option_df.iloc[j]['high']
             low = option_df.iloc[j]['low']
 
-            if low <= sl:
-                result = -200
+            if low <= sl_option:
+                result = -risk_per_lot * qty
                 break
 
-            if high >= target:
-                result = 400
+            if high >= target_option:
+                result = (target_option - entry_option) * qty
                 break
 
-        # UPDATE CAPITAL
         capital += result
         trade_count += 1
 
@@ -167,9 +173,10 @@ def run_strategy(df):
             "date": str(row_date),
             "type": direction,
             "strike": strike,
-            "entry": float(entry),
-            "pnl": result,
-            "capital": capital
+            "entry": float(entry_option),
+            "qty": qty,
+            "pnl": round(result, 2),
+            "capital": round(capital, 2)
         })
 
     return trades, capital
@@ -178,17 +185,13 @@ def run_strategy(df):
 # RUN
 # =====================
 if __name__ == "__main__":
-    print("📊 Fetching Nifty Data...")
     df = get_nifty_data()
 
-    print("🚀 Running Strategy...")
     trades, capital = run_strategy(df)
 
-    print("\n📊 ===== FINAL RESULT =====")
+    print("\n📊 FINAL RESULT")
     print("Total Trades:", len(trades))
-    print("Final Capital:", capital)
+    print("Final Capital:", round(capital, 2))
 
-    if trades:
-        print("\nLast 5 Trades:")
-        for t in trades[-5:]:
-            print(t)
+    for t in trades[-5:]:
+        print(t)
