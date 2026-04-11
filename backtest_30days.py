@@ -1,202 +1,167 @@
-import os
 from kiteconnect import KiteConnect
 import pandas as pd
-import matplotlib.pyplot as plt
+import datetime
+import os
 
 # ================= CONFIG =================
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
-REQUEST_TOKEN = os.getenv("REQUEST_TOKEN")
+api_key = os.environ.get("API_KEY")
+api_secret = os.environ.get("API_SECRET")
+request_token = os.environ.get("REQUEST_TOKEN")
 
-LOT_SIZE = 50
-SL_PERCENT = 0.25
-STRIKE_DISTANCE = 100
-DAILY_MAX_LOSS = -2000
+kite = KiteConnect(api_key=api_key)
+data = kite.generate_session(request_token, api_secret=api_secret)
+kite.set_access_token(data["access_token"])
 
-INITIAL_CAPITAL = 200000
+print("✅ Connected")
 
-START_DATE = "2024-01-01"
-END_DATE = "2024-01-31"
-# ==========================================
+# ================= SETTINGS =================
+NIFTY = 256265
 
-# ---------- LOGIN ----------
-kite = KiteConnect(api_key=API_KEY)
+START_CAPITAL = 20000
+capital = START_CAPITAL
 
-try:
-    session = kite.generate_session(REQUEST_TOKEN, api_secret=API_SECRET)
-    ACCESS_TOKEN = session["access_token"]
-    kite.set_access_token(ACCESS_TOKEN)
-    print("✅ Login successful")
-except Exception as e:
-    print("❌ Login failed:", e)
+MAX_TRADES = 5
+MAX_DAILY_LOSS = -2000
+
+# ================= FETCH DATA =================
+to_date = datetime.datetime.now()
+from_date = to_date - datetime.timedelta(days=30)
+
+data = kite.historical_data(NIFTY, from_date, to_date, "5minute")
+df = pd.DataFrame(data)
+
+if df.empty:
+    print("❌ No data")
     exit()
 
-# ---------- FETCH INSTRUMENTS ----------
-print("Fetching instruments...")
-instruments = pd.DataFrame(kite.instruments("NFO"))
+df.columns = [c.lower() for c in df.columns]
 
-# ---------- FETCH NIFTY DATA ----------
-print("Fetching Nifty data...")
-nifty = pd.DataFrame(kite.historical_data(
-    256265, START_DATE, END_DATE, "minute"
-))
-nifty['date'] = pd.to_datetime(nifty['date'])
-nifty.set_index('date', inplace=True)
+# ================= SUPERTREND =================
+def supertrend(df, period=10, multiplier=3):
+    df['hl2'] = (df['high'] + df['low']) / 2
+    df['tr'] = df['high'] - df['low']
+    df['atr'] = df['tr'].rolling(period).mean()
 
-capital = INITIAL_CAPITAL
-equity_curve = []
-trade_log = []
+    df['upperband'] = df['hl2'] + multiplier * df['atr']
+    df['lowerband'] = df['hl2'] - multiplier * df['atr']
 
-expiry_list = sorted(instruments['expiry'].dropna().unique())
+    st = [0]*len(df)
+    trend = [True]*len(df)
 
-# ---------- BACKTEST ----------
-for day, spot_day in nifty.groupby(nifty.index.date):
+    for i in range(1, len(df)):
+        if df['close'][i] > df['upperband'][i-1]:
+            trend[i] = True
+        elif df['close'][i] < df['lowerband'][i-1]:
+            trend[i] = False
+        else:
+            trend[i] = trend[i-1]
 
-    daily_pnl = 0
+        st[i] = df['lowerband'][i] if trend[i] else df['upperband'][i]
 
-    day_data = spot_day.between_time("09:20", "15:10")
-    if len(day_data) == 0:
+    df['supertrend'] = st
+    df['trend'] = trend
+
+    return df
+
+df = supertrend(df)
+
+# ================= SIDEWAYS FILTER =================
+df['range'] = df['high'] - df['low']
+
+# ================= BACKTEST =================
+position = None
+entry_price = 0
+
+total_pnl = 0
+wins = 0
+losses = 0
+trade_count = 0
+
+daily_pnl = 0
+daily_trades = 0
+current_day = None
+
+for i in range(20, len(df)):
+
+    row = df.iloc[i]
+    prev = df.iloc[i-1]
+
+    price = row['close']
+    st = row['supertrend']
+    date = row['date'].date()
+
+    # ===== RESET =====
+    if current_day != date:
+        current_day = date
+        daily_pnl = 0
+        daily_trades = 0
+        position = None
+
+    # ===== LIMITS =====
+    if daily_trades >= MAX_TRADES:
         continue
 
-    entry_spot = day_data.iloc[0]['close']
-
-    atm = round(entry_spot / 50) * 50
-    ce_strike = atm + STRIKE_DISTANCE
-    pe_strike = atm - STRIKE_DISTANCE
-
-    # expiry selection
-    expiry = next((e for e in expiry_list if e >= pd.Timestamp(day)), None)
-    if expiry is None:
+    if daily_pnl <= MAX_DAILY_LOSS:
         continue
 
-    ce_row = instruments[
-        (instruments['name'] == 'NIFTY') &
-        (instruments['strike'] == ce_strike) &
-        (instruments['instrument_type'] == 'CE') &
-        (instruments['expiry'] == expiry)
-    ]
-
-    pe_row = instruments[
-        (instruments['name'] == 'NIFTY') &
-        (instruments['strike'] == pe_strike) &
-        (instruments['instrument_type'] == 'PE') &
-        (instruments['expiry'] == expiry)
-    ]
-
-    if ce_row.empty or pe_row.empty:
-        print(f"{day} → Strike not found")
+    # ===== SIDEWAYS FILTER =====
+    avg_range = df['range'].rolling(10).mean().iloc[i]
+    if avg_range < 20:
         continue
 
-    ce_token = ce_row.iloc[0]['instrument_token']
-    pe_token = pe_row.iloc[0]['instrument_token']
+    # ===== ENTRY =====
+    if position is None:
 
-    # Fetch option data
-    ce = pd.DataFrame(kite.historical_data(ce_token, START_DATE, END_DATE, "minute"))
-    pe = pd.DataFrame(kite.historical_data(pe_token, START_DATE, END_DATE, "minute"))
+        # BUY
+        if row['trend'] == True and prev['trend'] == False:
+            position = "BUY"
+            entry_price = price
 
-    ce['date'] = pd.to_datetime(ce['date'])
-    pe['date'] = pd.to_datetime(pe['date'])
+        # SELL
+        elif row['trend'] == False and prev['trend'] == True:
+            position = "SELL"
+            entry_price = price
 
-    ce.set_index('date', inplace=True)
-    pe.set_index('date', inplace=True)
+    # ===== EXIT =====
+    elif position:
 
-    ce = ce.loc[day_data.index]
-    pe = pe.loc[day_data.index]
+        exit_trade = False
 
-    if len(ce) == 0 or len(pe) == 0:
-        print(f"{day} → No option data")
-        continue
+        # 🔥 DYNAMIC SL using Supertrend
+        if position == "BUY" and price < st:
+            pnl = price - entry_price
+            exit_trade = True
 
-    ce_entry = ce.iloc[0]['close']
-    pe_entry = pe.iloc[0]['close']
+        elif position == "SELL" and price > st:
+            pnl = entry_price - price
+            exit_trade = True
 
-    ce_sl = ce_entry * (1 + SL_PERCENT)
-    pe_sl = pe_entry * (1 + SL_PERCENT)
+        if exit_trade:
+            total_pnl += pnl
+            capital += pnl
+            daily_pnl += pnl
 
-    ce_active = True
-    pe_active = True
+            if pnl > 0:
+                wins += 1
+            else:
+                losses += 1
 
-    ce_exit = ce_entry
-    pe_exit = pe_entry
+            trade_count += 1
+            daily_trades += 1
 
-    for t in day_data.index:
+            position = None
 
-        ce_price = ce.loc[t]['close']
-        pe_price = pe.loc[t]['close']
+# ================= RESULT =================
+print("\n📊 SUPERTREND DYNAMIC STRATEGY\n")
 
-        # DAILY STOP LOSS
-        if daily_pnl <= DAILY_MAX_LOSS:
-            print(f"{day} → DAILY SL HIT")
-            break
+print(f"Starting Capital: ₹{START_CAPITAL}")
+print(f"Ending Capital: ₹{round(capital,2)}")
+print(f"Total Points: {round(total_pnl,2)}")
 
-        # CE SL
-        if ce_active and ce_price >= ce_sl:
-            ce_exit = ce_price
-            ce_active = False
-            if pe_active:
-                pe_sl = pe_entry
+print(f"\nTrades: {trade_count}")
+print(f"Wins: {wins} | Losses: {losses}")
 
-        # PE SL
-        if pe_active and pe_price >= pe_sl:
-            pe_exit = pe_price
-            pe_active = False
-            if ce_active:
-                ce_sl = ce_entry
-
-        # Exit at 3:10
-        if t.hour == 15 and t.minute >= 10:
-            if ce_active:
-                ce_exit = ce_price
-            if pe_active:
-                pe_exit = pe_price
-            break
-
-        # Live P&L
-        ce_live = (ce_entry - ce_price) * LOT_SIZE if ce_active else (ce_entry - ce_exit) * LOT_SIZE
-        pe_live = (pe_entry - pe_price) * LOT_SIZE if pe_active else (pe_entry - pe_exit) * LOT_SIZE
-
-        daily_pnl = ce_live + pe_live
-
-    ce_pnl = (ce_entry - ce_exit) * LOT_SIZE
-    pe_pnl = (pe_entry - pe_exit) * LOT_SIZE
-
-    total_pnl = ce_pnl + pe_pnl
-    capital += total_pnl
-
-    equity_curve.append(capital)
-
-    trade_log.append({
-        "date": day,
-        "expiry": expiry,
-        "ce_strike": ce_strike,
-        "pe_strike": pe_strike,
-        "pnl": total_pnl,
-        "capital": capital
-    })
-
-    print(f"{day} → P&L: {total_pnl}")
-
-# ---------- RESULTS ----------
-results = pd.DataFrame(trade_log)
-
-print("\n========= FINAL RESULT =========")
-print(f"Initial Capital : {INITIAL_CAPITAL}")
-print(f"Final Capital   : {capital}")
-print(f"Total P&L       : {results['pnl'].sum()}")
-
-win = len(results[results['pnl'] > 0])
-print(f"Win Rate        : {round(win/len(results)*100,2)}%")
-
-# Save results
-results.to_csv("backtest_results.csv", index=False)
-
-# ---------- EQUITY CURVE ----------
-plt.figure()
-plt.plot(equity_curve)
-plt.title("Equity Curve")
-plt.xlabel("Trades")
-plt.ylabel("Capital")
-plt.grid()
-
-plt.savefig("equity_curve.png")
-plt.show()
+if trade_count > 0:
+    print(f"Win Rate: {round((wins/trade_count)*100,2)}%")
+else:
+    print("No trades")
