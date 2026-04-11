@@ -1,92 +1,202 @@
-import pandas as pd
+import os
 from kiteconnect import KiteConnect
-from datetime import datetime, timedelta
+import pandas as pd
+import matplotlib.pyplot as plt
 
-# --- 1. CREDENTIALS ---
-# Get these from https://kite.trade/developer/dashboard
-API_KEY = "your_api_key"
-API_SECRET = "your_api_secret"
+# ================= CONFIG =================
+API_KEY = os.getenv("API_KEY")
+API_SECRET = os.getenv("API_SECRET")
+REQUEST_TOKEN = os.getenv("REQUEST_TOKEN")
 
-# 2. GETTING THE REQUEST TOKEN:
-# Login here: https://kite.trade/connect/login?api_key=YOUR_API_KEY
-# Copy the 'request_token=' value from the URL after redirecting.
-REQUEST_TOKEN = "paste_your_request_token_here" 
+LOT_SIZE = 50
+SL_PERCENT = 0.25
+STRIKE_DISTANCE = 100
+DAILY_MAX_LOSS = -2000
 
-# --- 2. INITIALIZE & AUTHENTICATE ---
+INITIAL_CAPITAL = 200000
+
+START_DATE = "2024-01-01"
+END_DATE = "2024-01-31"
+# ==========================================
+
+# ---------- LOGIN ----------
 kite = KiteConnect(api_key=API_KEY)
 
 try:
-    # Exchange Request Token for Access Token
-    data = kite.generate_session(REQUEST_TOKEN, api_secret=API_SECRET)
-    access_token = data["access_token"]
-    kite.set_access_token(access_token)
-    print(f"✅ Authentication Successful! Access Token: {access_token}")
+    session = kite.generate_session(REQUEST_TOKEN, api_secret=API_SECRET)
+    ACCESS_TOKEN = session["access_token"]
+    kite.set_access_token(ACCESS_TOKEN)
+    print("✅ Login successful")
 except Exception as e:
-    print(f"❌ Auth Failed: {e}")
-    print("Check if your Request Token is expired (they last only a few minutes) or already used.")
+    print("❌ Login failed:", e)
     exit()
 
-# --- 3. BACKTEST LOGIC ---
-def run_30_day_backtest():
-    print("🔄 Fetching 30 days of Nifty 50 data...")
-    
-    # Get Nifty 50 Instrument Token
-    instruments = kite.instruments("NSE")
-    nifty_token = next(i['instrument_token'] for i in instruments if i['tradingsymbol'] == 'NIFTY 50')
+# ---------- FETCH INSTRUMENTS ----------
+print("Fetching instruments...")
+instruments = pd.DataFrame(kite.instruments("NFO"))
 
-    # Fetch Data
-    to_date = datetime.now()
-    from_date = to_date - timedelta(days=30)
-    
-    try:
-        records = kite.historical_data(nifty_token, from_date, to_date, "minute")
-    except Exception as e:
-        print(f"❌ Historical Data Error: {e}")
-        print("Tip: Ensure 'Historical API' is subscribed in your Kite Dashboard.")
-        return
+# ---------- FETCH NIFTY DATA ----------
+print("Fetching Nifty data...")
+nifty = pd.DataFrame(kite.historical_data(
+    256265, START_DATE, END_DATE, "minute"
+))
+nifty['date'] = pd.to_datetime(nifty['date'])
+nifty.set_index('date', inplace=True)
 
-    df = pd.DataFrame(records)
-    df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
-    df['day'] = df['date'].dt.date
-    
-    results = []
-    lot_size = 50
-    sl_pct = 0.25 # 25% Stop Loss
+capital = INITIAL_CAPITAL
+equity_curve = []
+trade_log = []
 
-    for day, day_df in df.groupby('day'):
-        # Entry at 09:20
-        entry_row = day_df[day_df['date'].dt.strftime('%H:%M') == '09:20']
-        if entry_row.empty: continue
-        
-        spot_entry = entry_row.iloc[0]['close']
-        
-        # Simulate combined Premium (Approx 1.2% of Spot for a Strangle)
-        initial_premium = spot_entry * 0.012 
-        sl_value = initial_premium * (1 + sl_pct)
-        
-        # Exit at 15:10
-        exit_row = day_df[day_df['date'].dt.strftime('%H:%M') == '15:10']
-        if exit_row.empty: exit_row = day_df.iloc[-1:]
-        
-        spot_exit = exit_row.iloc[0]['close']
-        
-        # Simple Delta-based PnL simulation
-        # If market moves > 1.2%, assume SL hit. Otherwise, assume 40% Theta decay.
-        price_move_pct = abs(spot_exit - spot_entry) / spot_entry
-        
-        if price_move_pct > 0.012: 
-            day_pnl = -(initial_premium * sl_pct) # Loss capped at SL
-        else:
-            day_pnl = initial_premium * 0.40 # Profit from decay
-            
-        results.append({'Date': day, 'PnL': day_pnl * lot_size})
+expiry_list = sorted(instruments['expiry'].dropna().unique())
 
-    report = pd.DataFrame(results)
-    print("\n" + "="*30)
-    print(report)
-    print("="*30)
-    print(f"TOTAL 30-DAY PNL: ₹{report['PnL'].sum():.2f}")
-    print(f"WIN RATE: {(report['PnL'] > 0).mean()*100:.2f}%")
+# ---------- BACKTEST ----------
+for day, spot_day in nifty.groupby(nifty.index.date):
 
-if __name__ == "__main__":
-    run_30_day_backtest()
+    daily_pnl = 0
+
+    day_data = spot_day.between_time("09:20", "15:10")
+    if len(day_data) == 0:
+        continue
+
+    entry_spot = day_data.iloc[0]['close']
+
+    atm = round(entry_spot / 50) * 50
+    ce_strike = atm + STRIKE_DISTANCE
+    pe_strike = atm - STRIKE_DISTANCE
+
+    # expiry selection
+    expiry = next((e for e in expiry_list if e >= pd.Timestamp(day)), None)
+    if expiry is None:
+        continue
+
+    ce_row = instruments[
+        (instruments['name'] == 'NIFTY') &
+        (instruments['strike'] == ce_strike) &
+        (instruments['instrument_type'] == 'CE') &
+        (instruments['expiry'] == expiry)
+    ]
+
+    pe_row = instruments[
+        (instruments['name'] == 'NIFTY') &
+        (instruments['strike'] == pe_strike) &
+        (instruments['instrument_type'] == 'PE') &
+        (instruments['expiry'] == expiry)
+    ]
+
+    if ce_row.empty or pe_row.empty:
+        print(f"{day} → Strike not found")
+        continue
+
+    ce_token = ce_row.iloc[0]['instrument_token']
+    pe_token = pe_row.iloc[0]['instrument_token']
+
+    # Fetch option data
+    ce = pd.DataFrame(kite.historical_data(ce_token, START_DATE, END_DATE, "minute"))
+    pe = pd.DataFrame(kite.historical_data(pe_token, START_DATE, END_DATE, "minute"))
+
+    ce['date'] = pd.to_datetime(ce['date'])
+    pe['date'] = pd.to_datetime(pe['date'])
+
+    ce.set_index('date', inplace=True)
+    pe.set_index('date', inplace=True)
+
+    ce = ce.loc[day_data.index]
+    pe = pe.loc[day_data.index]
+
+    if len(ce) == 0 or len(pe) == 0:
+        print(f"{day} → No option data")
+        continue
+
+    ce_entry = ce.iloc[0]['close']
+    pe_entry = pe.iloc[0]['close']
+
+    ce_sl = ce_entry * (1 + SL_PERCENT)
+    pe_sl = pe_entry * (1 + SL_PERCENT)
+
+    ce_active = True
+    pe_active = True
+
+    ce_exit = ce_entry
+    pe_exit = pe_entry
+
+    for t in day_data.index:
+
+        ce_price = ce.loc[t]['close']
+        pe_price = pe.loc[t]['close']
+
+        # DAILY STOP LOSS
+        if daily_pnl <= DAILY_MAX_LOSS:
+            print(f"{day} → DAILY SL HIT")
+            break
+
+        # CE SL
+        if ce_active and ce_price >= ce_sl:
+            ce_exit = ce_price
+            ce_active = False
+            if pe_active:
+                pe_sl = pe_entry
+
+        # PE SL
+        if pe_active and pe_price >= pe_sl:
+            pe_exit = pe_price
+            pe_active = False
+            if ce_active:
+                ce_sl = ce_entry
+
+        # Exit at 3:10
+        if t.hour == 15 and t.minute >= 10:
+            if ce_active:
+                ce_exit = ce_price
+            if pe_active:
+                pe_exit = pe_price
+            break
+
+        # Live P&L
+        ce_live = (ce_entry - ce_price) * LOT_SIZE if ce_active else (ce_entry - ce_exit) * LOT_SIZE
+        pe_live = (pe_entry - pe_price) * LOT_SIZE if pe_active else (pe_entry - pe_exit) * LOT_SIZE
+
+        daily_pnl = ce_live + pe_live
+
+    ce_pnl = (ce_entry - ce_exit) * LOT_SIZE
+    pe_pnl = (pe_entry - pe_exit) * LOT_SIZE
+
+    total_pnl = ce_pnl + pe_pnl
+    capital += total_pnl
+
+    equity_curve.append(capital)
+
+    trade_log.append({
+        "date": day,
+        "expiry": expiry,
+        "ce_strike": ce_strike,
+        "pe_strike": pe_strike,
+        "pnl": total_pnl,
+        "capital": capital
+    })
+
+    print(f"{day} → P&L: {total_pnl}")
+
+# ---------- RESULTS ----------
+results = pd.DataFrame(trade_log)
+
+print("\n========= FINAL RESULT =========")
+print(f"Initial Capital : {INITIAL_CAPITAL}")
+print(f"Final Capital   : {capital}")
+print(f"Total P&L       : {results['pnl'].sum()}")
+
+win = len(results[results['pnl'] > 0])
+print(f"Win Rate        : {round(win/len(results)*100,2)}%")
+
+# Save results
+results.to_csv("backtest_results.csv", index=False)
+
+# ---------- EQUITY CURVE ----------
+plt.figure()
+plt.plot(equity_curve)
+plt.title("Equity Curve")
+plt.xlabel("Trades")
+plt.ylabel("Capital")
+plt.grid()
+
+plt.savefig("equity_curve.png")
+plt.show()
