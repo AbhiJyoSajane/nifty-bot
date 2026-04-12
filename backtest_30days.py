@@ -17,7 +17,7 @@ print("✅ Connected")
 
 # ================= SETTINGS =================
 NIFTY = 256265
-LOT_SIZE = 50
+LOT_SIZE = 65   # ✅ Updated
 
 START_CAPITAL = 20000
 capital = START_CAPITAL
@@ -39,6 +39,9 @@ if df.empty:
 
 df.columns = [c.lower() for c in df.columns]
 
+# ================= EMA FILTER =================
+df['ema20'] = df['close'].rolling(20).mean()
+
 # ================= LOAD INSTRUMENTS =================
 print("📥 Loading instruments...")
 inst = pd.DataFrame(kite.instruments("NFO"))
@@ -57,8 +60,6 @@ def get_expiry(date):
 
 def get_option_token(price, expiry, opt_type):
     atm = get_atm(price)
-
-    # Slight ITM selection
     strike = atm - 100 if opt_type == "CE" else atm + 100
 
     row = inst[
@@ -114,6 +115,7 @@ for i in range(30, len(df)):
     prev = df.iloc[i-1]
 
     price = row['close']
+    ema = row['ema20']
     time_ = row['date']
     t = time_.time()
     date = time_.date()
@@ -136,8 +138,11 @@ for i in range(30, len(df)):
         continue
 
     # ===== ENTRY WINDOW =====
-    if not (datetime.time(9,50) <= t <= datetime.time(10,45)):
+    if not (datetime.time(10,0) <= t <= datetime.time(11,0)):
         continue
+
+    # ===== STRONG CANDLE =====
+    candle_size = abs(row['close'] - row['open'])
 
     # ===== ENTRY =====
     if position is None and trade_count < MAX_TRADES and daily_pnl > MAX_DAILY_LOSS:
@@ -147,7 +152,7 @@ for i in range(30, len(df)):
             continue
 
         # BUY (CE)
-        if price > orb_high and (price - orb_high) > 10:
+        if price > orb_high and price > ema and candle_size > 15:
 
             token = get_option_token(price, expiry, "CE")
 
@@ -161,7 +166,7 @@ for i in range(30, len(df)):
                 sl = entry_price - 20
 
         # SELL (PE)
-        elif price < orb_low and (orb_low - price) > 10:
+        elif price < orb_low and price < ema and candle_size > 15:
 
             token = get_option_token(price, expiry, "PE")
 
@@ -181,7 +186,7 @@ for i in range(30, len(df)):
 
         profit = current - entry_price
 
-        # Trailing logic
+        # Trailing SL logic
         if profit > 20:
             sl = entry_price
 
@@ -205,7 +210,7 @@ for i in range(30, len(df)):
 wins = len([x for x in results if x > 0])
 losses = len([x for x in results if x < 0])
 
-print("\n📊 FINAL PRO OPTION BACKTEST\n")
+print("\n📊 FINAL FILTERED OPTION BACKTEST\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
