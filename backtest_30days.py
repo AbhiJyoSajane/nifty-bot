@@ -85,6 +85,7 @@ def get_price(df_opt, t):
 position = None
 entry_price = 0
 sl = 0
+target = 0
 
 orb_high = None
 orb_low = None
@@ -129,21 +130,20 @@ for i in range(30, len(df)):
     if not (datetime.time(10,0) <= t <= datetime.time(11,30)):
         continue
 
-    # ===== DETECT BREAKOUT =====
+    # BREAKOUT
     if price > orb_high:
         pullback_flag = "BUY"
-
     elif price < orb_low:
         pullback_flag = "SELL"
 
-    # ===== WAIT FOR PULLBACK =====
+    # ENTRY
     if position is None and trades < MAX_TRADES and daily_pnl > MAX_DAILY_LOSS:
 
         expiry = get_expiry(date)
         if expiry is None:
             continue
 
-        # BUY PULLBACK
+        # BUY
         if pullback_flag == "BUY" and price > ema and prev['close'] < prev['open']:
 
             token = get_token(price, expiry, "CE")
@@ -154,9 +154,12 @@ for i in range(30, len(df)):
 
                 entry_price = get_price(opt, time_)
                 position = "BUY"
-                sl = entry_price - 25
 
-        # SELL PULLBACK
+                sl = prev['low']
+                risk = entry_price - sl
+                target = entry_price + (2 * risk)
+
+        # SELL
         elif pullback_flag == "SELL" and price < ema and prev['close'] > prev['open']:
 
             token = get_token(price, expiry, "PE")
@@ -167,37 +170,43 @@ for i in range(30, len(df)):
 
                 entry_price = get_price(opt, time_)
                 position = "SELL"
-                sl = entry_price - 25
 
-    # ===== EXIT =====
+                sl = prev['high']
+                risk = sl - entry_price
+                target = entry_price - (2 * risk)
+
+    # EXIT
     elif position:
 
         current = get_price(opt, time_)
-        profit = current - entry_price
 
-        if profit > 25:
-            sl = entry_price
+        if position == "BUY":
+            if current <= sl or current >= target:
+                pnl = (current - entry_price) * LOT_SIZE
 
-        if profit > 50:
-            sl = entry_price + 25
+                capital += pnl
+                daily_pnl += pnl
+                results.append(pnl)
 
-        if profit > 80:
-            sl = entry_price + 50
+                position = None
+                trades += 1
 
-        if current <= sl:
-            pnl = (current - entry_price) * LOT_SIZE
-            capital += pnl
-            daily_pnl += pnl
-            results.append(pnl)
+        elif position == "SELL":
+            if current >= sl or current <= target:
+                pnl = (entry_price - current) * LOT_SIZE
 
-            position = None
-            trades += 1
+                capital += pnl
+                daily_pnl += pnl
+                results.append(pnl)
+
+                position = None
+                trades += 1
 
 # RESULT
 wins = len([x for x in results if x > 0])
 losses = len([x for x in results if x < 0])
 
-print("\n📊 PULLBACK OPTION STRATEGY\n")
+print("\n📊 CANDLE SL STRATEGY\n")
 print(f"Capital: ₹{round(capital,2)}")
 print(f"PnL: ₹{round(capital-START_CAPITAL,2)}")
 print(f"Trades: {len(results)} | Wins: {wins} | Losses: {losses}")
