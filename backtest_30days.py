@@ -35,11 +35,12 @@ df.columns = [c.lower() for c in df.columns]
 df['ema20'] = df['close'].rolling(20).mean()
 
 # ================= INSTRUMENTS =================
+print("📥 Loading instruments...")
 inst = pd.DataFrame(kite.instruments("NFO"))
 inst['expiry'] = pd.to_datetime(inst['expiry'])
 
 def get_atm(price):
-    return round(price/50)*50
+    return round(price / 50) * 50
 
 def get_expiry(date):
     return inst[(inst['name']=="NIFTY") & (inst['expiry']>=pd.to_datetime(date))]['expiry'].min()
@@ -55,7 +56,9 @@ def get_token(price, expiry, opt_type):
         (inst['instrument_type']==opt_type)
     ]
 
-    return int(row.iloc[0]['instrument_token']) if not row.empty else None
+    if not row.empty:
+        return int(row.iloc[0]['instrument_token']), strike
+    return None, None
 
 # ================= CACHE =================
 cache = {}
@@ -87,6 +90,8 @@ entry_index = 0
 sl_index = 0
 target_index = 0
 opt = None
+strike = None
+opt_type = None
 
 orb_high = None
 orb_low = None
@@ -97,6 +102,7 @@ trades = 0
 current_day = None
 
 results = []
+trade_log = []
 
 for i in range(30, len(df)):
 
@@ -147,7 +153,7 @@ for i in range(30, len(df)):
         # BUY
         if pullback_flag == "BUY" and price > ema and prev['close'] < prev['open']:
 
-            token = get_token(price, expiry, "CE")
+            token, strike = get_token(price, expiry, "CE")
             if token:
                 opt = load_option(token)
                 if opt is None:
@@ -156,6 +162,7 @@ for i in range(30, len(df)):
                 entry_price = get_price(opt, time_)
                 entry_index = price
                 position = "BUY"
+                opt_type = "CE"
 
                 sl_index = prev['low']
                 risk = entry_index - sl_index
@@ -164,7 +171,7 @@ for i in range(30, len(df)):
         # SELL
         elif pullback_flag == "SELL" and price < ema and prev['close'] > prev['open']:
 
-            token = get_token(price, expiry, "PE")
+            token, strike = get_token(price, expiry, "PE")
             if token:
                 opt = load_option(token)
                 if opt is None:
@@ -173,12 +180,13 @@ for i in range(30, len(df)):
                 entry_price = get_price(opt, time_)
                 entry_index = price
                 position = "SELL"
+                opt_type = "PE"
 
                 sl_index = prev['high']
                 risk = sl_index - entry_index
                 target_index = entry_index - risk
 
-    # EXIT (based on INDEX)
+    # EXIT
     elif position:
 
         current_index = price
@@ -187,6 +195,15 @@ for i in range(30, len(df)):
         if position == "BUY":
             if current_index <= sl_index or current_index >= target_index:
                 pnl = (current_option - entry_price) * LOT_SIZE
+
+                trade_log.append({
+                    "date": date,
+                    "type": opt_type,
+                    "strike": strike,
+                    "entry": round(entry_price,2),
+                    "exit": round(current_option,2),
+                    "pnl": round(pnl,2)
+                })
 
                 capital += pnl
                 daily_pnl += pnl
@@ -199,6 +216,15 @@ for i in range(30, len(df)):
             if current_index >= sl_index or current_index <= target_index:
                 pnl = (entry_price - current_option) * LOT_SIZE
 
+                trade_log.append({
+                    "date": date,
+                    "type": opt_type,
+                    "strike": strike,
+                    "entry": round(entry_price,2),
+                    "exit": round(current_option,2),
+                    "pnl": round(pnl,2)
+                })
+
                 capital += pnl
                 daily_pnl += pnl
                 results.append(pnl)
@@ -206,14 +232,21 @@ for i in range(30, len(df)):
                 position = None
                 trades += 1
 
-# RESULT
+# ================= RESULT =================
 wins = len([x for x in results if x > 0])
 losses = len([x for x in results if x < 0])
 
-print("\n📊 INDEX BASED SL (1:1)\n")
+print("\n📊 FINAL RESULT\n")
 print(f"Capital: ₹{round(capital,2)}")
 print(f"PnL: ₹{round(capital-START_CAPITAL,2)}")
 print(f"Trades: {len(results)} | Wins: {wins} | Losses: {losses}")
 
 if results:
     print(f"Win Rate: {round((wins/len(results))*100,2)}%")
+
+# ================= TRADE LOG =================
+print("\n📋 TRADE DETAILS:\n")
+
+for t in trade_log:
+    print(f"{t['date']} | {t['type']} {t['strike']} | "
+          f"{t['entry']} → {t['exit']} | PnL: ₹{t['pnl']}")
