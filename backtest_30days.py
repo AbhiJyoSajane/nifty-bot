@@ -32,7 +32,6 @@ spot = kite.historical_data(NIFTY, from_date, to_date, "5minute")
 df = pd.DataFrame(spot)
 df.columns = [c.lower() for c in df.columns]
 
-# EMA
 df['ema20'] = df['close'].rolling(20).mean()
 
 # ================= INSTRUMENTS =================
@@ -85,7 +84,7 @@ def get_price(df_opt, t):
 position = None
 entry_price = 0
 sl = 0
-target = 0
+opt = None
 
 orb_high = None
 orb_low = None
@@ -155,9 +154,7 @@ for i in range(30, len(df)):
                 entry_price = get_price(opt, time_)
                 position = "BUY"
 
-                sl = prev['low']
-                risk = entry_price - sl
-                target = entry_price + (2 * risk)
+                sl = prev['low']  # initial SL
 
         # SELL
         elif pullback_flag == "SELL" and price < ema and prev['close'] > prev['open']:
@@ -171,19 +168,19 @@ for i in range(30, len(df)):
                 entry_price = get_price(opt, time_)
                 position = "SELL"
 
-                sl = prev['high']
-                risk = sl - entry_price
-                target = entry_price - (2 * risk)
+                sl = prev['high']  # initial SL
 
-    # EXIT
+    # EXIT (TRAILING)
     elif position:
 
         current = get_price(opt, time_)
 
+        # TRAIL SL
         if position == "BUY":
-            if current <= sl or current >= target:
-                pnl = (current - entry_price) * LOT_SIZE
+            sl = max(sl, prev['low'])
 
+            if current <= sl:
+                pnl = (current - entry_price) * LOT_SIZE
                 capital += pnl
                 daily_pnl += pnl
                 results.append(pnl)
@@ -192,9 +189,10 @@ for i in range(30, len(df)):
                 trades += 1
 
         elif position == "SELL":
-            if current >= sl or current <= target:
-                pnl = (entry_price - current) * LOT_SIZE
+            sl = min(sl, prev['high'])
 
+            if current >= sl:
+                pnl = (entry_price - current) * LOT_SIZE
                 capital += pnl
                 daily_pnl += pnl
                 results.append(pnl)
@@ -206,7 +204,7 @@ for i in range(30, len(df)):
 wins = len([x for x in results if x > 0])
 losses = len([x for x in results if x < 0])
 
-print("\n📊 CANDLE SL STRATEGY\n")
+print("\n📊 TRAILING SL STRATEGY\n")
 print(f"Capital: ₹{round(capital,2)}")
 print(f"PnL: ₹{round(capital-START_CAPITAL,2)}")
 print(f"Trades: {len(results)} | Wins: {wins} | Losses: {losses}")
