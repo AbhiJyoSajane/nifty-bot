@@ -17,21 +17,25 @@ print("✅ Connected")
 # ================= SETTINGS =================
 NIFTY = 256265
 LOT_SIZE = 65
-
 START_CAPITAL = 20000
-capital = START_CAPITAL
 
+capital = START_CAPITAL
 MAX_TRADES = 2
 MAX_DAILY_LOSS = -2000
 
-# ================= DATA =================
+# ================= DATE =================
 to_date = datetime.datetime.now()
 from_date = to_date - datetime.timedelta(days=30)
 
+# ================= FETCH INDEX =================
 spot = kite.historical_data(NIFTY, from_date, to_date, "5minute")
 df = pd.DataFrame(spot)
-df.columns = [c.lower() for c in df.columns]
 
+if df.empty:
+    print("❌ No data")
+    exit()
+
+df.columns = [c.lower() for c in df.columns]
 df['ema20'] = df['close'].rolling(20).mean()
 
 # ================= INSTRUMENTS =================
@@ -39,13 +43,11 @@ print("📥 Loading instruments...")
 inst = pd.DataFrame(kite.instruments("NFO"))
 inst['expiry'] = pd.to_datetime(inst['expiry'])
 
-def get_atm(price):
-    return round(price / 50) * 50
-
+# ================= HELPERS =================
 def get_expiry(date):
     return inst[(inst['name']=="NIFTY") & (inst['expiry']>=pd.to_datetime(date))]['expiry'].min()
 
-# ================= CACHE =================
+# ================= OPTION CACHE =================
 cache = {}
 
 def load_option(token):
@@ -64,55 +66,43 @@ def load_option(token):
 
     return cache[token]
 
-def get_price(df_opt, t):
-    idx = df_opt.index.get_indexer([pd.to_datetime(t)], method='nearest')
+def get_price(df_opt, time_):
+    idx = df_opt.index.get_indexer([pd.to_datetime(time_)], method='nearest')
     return df_opt.iloc[idx[0]]['close']
 
-# ================= 🔥 BEST MOVING STRIKE =================
-def get_best_token(price, expiry, opt_type):
+# ================= 🔥 CORRECT STRIKE SELECTION =================
+def get_best_token(price, expiry, opt_type, time_):
 
-    atm = get_atm(price)
+    atm = round(price / 50) * 50
 
-    best_token = None
-    best_strike = None
-    best_movement = 0
+    for diff in range(0, 500, 50):
+        for direction in [1, -1]:
 
-    for diff in range(-300, 300, 50):
+            strike = atm + (diff * direction)
 
-        strike = atm + diff
+            row = inst[
+                (inst['name']=="NIFTY") &
+                (inst['strike']==strike) &
+                (inst['expiry']==expiry) &
+                (inst['instrument_type']==opt_type)
+            ]
 
-        row = inst[
-            (inst['name']=="NIFTY") &
-            (inst['strike']==strike) &
-            (inst['expiry']==expiry) &
-            (inst['instrument_type']==opt_type)
-        ]
+            if row.empty:
+                continue
 
-        if row.empty:
-            continue
+            token = int(row.iloc[0]['instrument_token'])
 
-        token = int(row.iloc[0]['instrument_token'])
+            opt_df = load_option(token)
+            if opt_df is None:
+                continue
 
-        opt_df = load_option(token)
-        if opt_df is None or len(opt_df) < 10:
-            continue
+            entry_price = get_price(opt_df, time_)
 
-        premium = opt_df.iloc[-1]['close']
+            # ✅ STRICT CAPITAL CHECK
+            if entry_price * LOT_SIZE <= capital:
+                return token, strike
 
-        # ✅ must fit capital
-        if premium * LOT_SIZE > capital:
-            continue
-
-        # ✅ movement calculation (last 5 candles)
-        recent = opt_df.tail(5)
-        movement = recent['high'].max() - recent['low'].min()
-
-        if movement > best_movement:
-            best_movement = movement
-            best_token = token
-            best_strike = strike
-
-    return best_token, best_strike
+    return None, None
 
 # ================= BACKTEST =================
 position = None
@@ -146,7 +136,7 @@ for i in range(30, len(df)):
     t = time_.time()
     date = time_.date()
 
-    # RESET
+    # RESET DAILY
     if current_day != date:
         current_day = date
         orb_high = None
@@ -156,7 +146,7 @@ for i in range(30, len(df)):
         trades = 0
         pullback_flag = False
 
-    # ORB
+    # ORB BUILD
     if datetime.time(9,15) <= t <= datetime.time(9,45):
         orb_high = max(orb_high or row['high'], row['high'])
         orb_low = min(orb_low or row['low'], row['low'])
@@ -164,7 +154,7 @@ for i in range(30, len(df)):
     if orb_high is None:
         continue
 
-    # WINDOW
+    # ENTRY WINDOW
     if not (datetime.time(10,0) <= t <= datetime.time(11,30)):
         continue
 
@@ -181,10 +171,11 @@ for i in range(30, len(df)):
         if expiry is None:
             continue
 
-        # BUY CE
+        # CE BUY
         if pullback_flag == "BUY" and price > ema and prev['close'] < prev['open']:
 
-            token, strike = get_best_token(price, expiry, "CE")
+            token, strike = get_best_token(price, expiry, "CE", time_)
+
             if token:
                 opt = load_option(token)
                 entry_price = get_price(opt, time_)
@@ -196,10 +187,11 @@ for i in range(30, len(df)):
                 risk = entry_index - sl_index
                 target_index = entry_index + risk
 
-        # BUY PE
+        # PE BUY
         elif pullback_flag == "SELL" and price < ema and prev['close'] > prev['open']:
 
-            token, strike = get_best_token(price, expiry, "PE")
+            token, strike = get_best_token(price, expiry, "PE", time_)
+
             if token:
                 opt = load_option(token)
                 entry_price = get_price(opt, time_)
@@ -211,7 +203,7 @@ for i in range(30, len(df)):
                 risk = sl_index - entry_index
                 target_index = entry_index - risk
 
-    # EXIT
+    # EXIT (INDEX BASED)
     elif position:
 
         current_index = price
@@ -237,13 +229,13 @@ for i in range(30, len(df)):
             position = None
             trades += 1
 
-# RESULT
+# ================= RESULT =================
 wins = len([x for x in results if x > 0])
 losses = len([x for x in results if x < 0])
 
-print("\n📊 BEST MOVING STRIKE RESULT\n")
+print("\n📊 FINAL CLEAN RESULT\n")
 print(f"Capital: ₹{round(capital,2)}")
-print(f"PnL: ₹{round(capital-START_CAPITAL,2)}")
+print(f"PnL: ₹{round(capital - START_CAPITAL,2)}")
 print(f"Trades: {len(results)} | Wins: {wins} | Losses: {losses}")
 
 if results:
