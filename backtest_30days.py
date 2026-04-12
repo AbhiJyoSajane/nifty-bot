@@ -9,6 +9,7 @@ api_secret = os.environ.get("API_SECRET")
 request_token = os.environ.get("REQUEST_TOKEN")
 
 kite = KiteConnect(api_key=api_key)
+
 data = kite.generate_session(request_token, api_secret=api_secret)
 kite.set_access_token(data["access_token"])
 
@@ -31,9 +32,15 @@ from_date = to_date - datetime.timedelta(days=30)
 # ================= FETCH INDEX =================
 spot = kite.historical_data(NIFTY, from_date, to_date, "5minute")
 df = pd.DataFrame(spot)
+
+if df.empty:
+    print("❌ No index data")
+    exit()
+
 df.columns = [c.lower() for c in df.columns]
 
-# ================= INSTRUMENTS =================
+# ================= LOAD INSTRUMENTS =================
+print("📥 Loading instruments...")
 inst = pd.DataFrame(kite.instruments("NFO"))
 inst['expiry'] = pd.to_datetime(inst['expiry'])
 
@@ -42,38 +49,45 @@ def get_atm(price):
     return round(price / 50) * 50
 
 def get_expiry(date):
-    return inst[(inst['name']=="NIFTY") & (inst['expiry']>=pd.to_datetime(date))]['expiry'].min()
+    valid = inst[
+        (inst['name'] == "NIFTY") &
+        (inst['expiry'] >= pd.to_datetime(date))
+    ]
+    return valid['expiry'].min() if not valid.empty else None
 
-def find_best_option(price, expiry, opt_type, time_):
+def get_option_token(price, expiry, opt_type):
     atm = get_atm(price)
 
-    for diff in range(-300, 300, 50):
-        strike = atm + diff
-        row = inst[
-            (inst['name']=="NIFTY") &
-            (inst['strike']==strike) &
-            (inst['expiry']==expiry) &
-            (inst['instrument_type']==opt_type)
-        ]
+    # Slight ITM selection
+    strike = atm - 100 if opt_type == "CE" else atm + 100
 
-        if not row.empty:
-            token = int(row.iloc[0]['instrument_token'])
-            data = kite.historical_data(token, from_date, to_date, "5minute")
+    row = inst[
+        (inst['name'] == "NIFTY") &
+        (inst['strike'] == strike) &
+        (inst['expiry'] == expiry) &
+        (inst['instrument_type'] == opt_type)
+    ]
 
-            df_opt = pd.DataFrame(data)
-            if df_opt.empty:
-                continue
+    return int(row.iloc[0]['instrument_token']) if not row.empty else None
 
-            df_opt['date'] = pd.to_datetime(df_opt['date'])
-            df_opt.set_index('date', inplace=True)
+# ================= OPTION CACHE =================
+option_cache = {}
 
-            idx = df_opt.index.get_indexer([pd.to_datetime(time_)], method='nearest')
-            premium = df_opt.iloc[idx[0]]['close']
+def load_option(token):
+    if token not in option_cache:
+        data = kite.historical_data(token, from_date, to_date, "5minute")
+        df_opt = pd.DataFrame(data)
 
-            if 80 <= premium <= 150:
-                return token, df_opt
+        if df_opt.empty:
+            return None
 
-    return None, None
+        df_opt.columns = [c.lower() for c in df_opt.columns]
+        df_opt['date'] = pd.to_datetime(df_opt['date'])
+        df_opt.set_index('date', inplace=True)
+
+        option_cache[token] = df_opt
+
+    return option_cache[token]
 
 def get_price(opt_df, time_):
     idx = opt_df.index.get_indexer([pd.to_datetime(time_)], method='nearest')
@@ -89,7 +103,7 @@ orb_high = None
 orb_low = None
 
 daily_pnl = 0
-trades = 0
+trade_count = 0
 current_day = None
 
 results = []
@@ -104,16 +118,16 @@ for i in range(30, len(df)):
     t = time_.time()
     date = time_.date()
 
-    # RESET
+    # ===== RESET =====
     if current_day != date:
         current_day = date
         orb_high = None
         orb_low = None
         position = None
         daily_pnl = 0
-        trades = 0
+        trade_count = 0
 
-    # BUILD ORB
+    # ===== BUILD ORB =====
     if datetime.time(9,15) <= t <= datetime.time(9,45):
         orb_high = max(orb_high or row['high'], row['high'])
         orb_low = min(orb_low or row['low'], row['low'])
@@ -121,41 +135,53 @@ for i in range(30, len(df)):
     if orb_high is None:
         continue
 
-    # ENTRY WINDOW
+    # ===== ENTRY WINDOW =====
     if not (datetime.time(9,50) <= t <= datetime.time(10,45)):
         continue
 
-    # ENTRY
-    if position is None and trades < MAX_TRADES and daily_pnl > MAX_DAILY_LOSS:
+    # ===== ENTRY =====
+    if position is None and trade_count < MAX_TRADES and daily_pnl > MAX_DAILY_LOSS:
 
         expiry = get_expiry(date)
+        if expiry is None:
+            continue
 
-        # BUY
+        # BUY (CE)
         if price > orb_high and (price - orb_high) > 10:
 
-            token, opt_df = find_best_option(price, expiry, "CE", time_)
-            if opt_df is not None:
+            token = get_option_token(price, expiry, "CE")
+
+            if token:
+                opt_df = load_option(token)
+                if opt_df is None:
+                    continue
+
                 entry_price = get_price(opt_df, time_)
                 position = "BUY"
                 sl = entry_price - 20
 
-        # SELL
+        # SELL (PE)
         elif price < orb_low and (orb_low - price) > 10:
 
-            token, opt_df = find_best_option(price, expiry, "PE", time_)
-            if opt_df is not None:
+            token = get_option_token(price, expiry, "PE")
+
+            if token:
+                opt_df = load_option(token)
+                if opt_df is None:
+                    continue
+
                 entry_price = get_price(opt_df, time_)
                 position = "SELL"
                 sl = entry_price - 20
 
-    # EXIT (TRAILING)
+    # ===== EXIT (TRAILING SL) =====
     elif position:
 
         current = get_price(opt_df, time_)
 
         profit = current - entry_price
 
-        # TRAILING LOGIC
+        # Trailing logic
         if profit > 20:
             sl = entry_price
 
@@ -173,19 +199,22 @@ for i in range(30, len(df)):
             results.append(pnl)
 
             position = None
-            trades += 1
+            trade_count += 1
 
 # ================= RESULT =================
 wins = len([x for x in results if x > 0])
 losses = len([x for x in results if x < 0])
 
-print("\n📊 PRO OPTION RESULT\n")
+print("\n📊 FINAL PRO OPTION BACKTEST\n")
 
 print(f"Starting Capital: ₹{START_CAPITAL}")
 print(f"Ending Capital: ₹{round(capital,2)}")
 print(f"Total PnL: ₹{round(capital - START_CAPITAL,2)}")
 
-print(f"\nTrades: {len(results)} | Wins: {wins} | Losses: {losses}")
+print(f"\nTrades: {len(results)}")
+print(f"Wins: {wins} | Losses: {losses}")
 
 if results:
     print(f"Win Rate: {round((wins/len(results))*100,2)}%")
+else:
+    print("No trades executed")
