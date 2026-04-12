@@ -45,21 +45,6 @@ def get_atm(price):
 def get_expiry(date):
     return inst[(inst['name']=="NIFTY") & (inst['expiry']>=pd.to_datetime(date))]['expiry'].min()
 
-def get_token(price, expiry, opt_type):
-    atm = get_atm(price)
-    strike = atm-100 if opt_type=="CE" else atm+100
-
-    row = inst[
-        (inst['name']=="NIFTY") &
-        (inst['strike']==strike) &
-        (inst['expiry']==expiry) &
-        (inst['instrument_type']==opt_type)
-    ]
-
-    if not row.empty:
-        return int(row.iloc[0]['instrument_token']), strike
-    return None, None
-
 # ================= CACHE =================
 cache = {}
 
@@ -82,6 +67,52 @@ def load_option(token):
 def get_price(df_opt, t):
     idx = df_opt.index.get_indexer([pd.to_datetime(t)], method='nearest')
     return df_opt.iloc[idx[0]]['close']
+
+# ================= 🔥 BEST MOVING STRIKE =================
+def get_best_token(price, expiry, opt_type):
+
+    atm = get_atm(price)
+
+    best_token = None
+    best_strike = None
+    best_movement = 0
+
+    for diff in range(-300, 300, 50):
+
+        strike = atm + diff
+
+        row = inst[
+            (inst['name']=="NIFTY") &
+            (inst['strike']==strike) &
+            (inst['expiry']==expiry) &
+            (inst['instrument_type']==opt_type)
+        ]
+
+        if row.empty:
+            continue
+
+        token = int(row.iloc[0]['instrument_token'])
+
+        opt_df = load_option(token)
+        if opt_df is None or len(opt_df) < 10:
+            continue
+
+        premium = opt_df.iloc[-1]['close']
+
+        # ✅ must fit capital
+        if premium * LOT_SIZE > capital:
+            continue
+
+        # ✅ movement calculation (last 5 candles)
+        recent = opt_df.tail(5)
+        movement = recent['high'].max() - recent['low'].min()
+
+        if movement > best_movement:
+            best_movement = movement
+            best_token = token
+            best_strike = strike
+
+    return best_token, best_strike
 
 # ================= BACKTEST =================
 position = None
@@ -150,15 +181,12 @@ for i in range(30, len(df)):
         if expiry is None:
             continue
 
-        # BUY
+        # BUY CE
         if pullback_flag == "BUY" and price > ema and prev['close'] < prev['open']:
 
-            token, strike = get_token(price, expiry, "CE")
+            token, strike = get_best_token(price, expiry, "CE")
             if token:
                 opt = load_option(token)
-                if opt is None:
-                    continue
-
                 entry_price = get_price(opt, time_)
                 entry_index = price
                 position = "BUY"
@@ -168,15 +196,12 @@ for i in range(30, len(df)):
                 risk = entry_index - sl_index
                 target_index = entry_index + risk
 
-        # SELL
+        # BUY PE
         elif pullback_flag == "SELL" and price < ema and prev['close'] > prev['open']:
 
-            token, strike = get_token(price, expiry, "PE")
+            token, strike = get_best_token(price, expiry, "PE")
             if token:
                 opt = load_option(token)
-                if opt is None:
-                    continue
-
                 entry_price = get_price(opt, time_)
                 entry_index = price
                 position = "SELL"
@@ -192,51 +217,31 @@ for i in range(30, len(df)):
         current_index = price
         current_option = get_price(opt, time_)
 
-        if position == "BUY":
-            if current_index <= sl_index or current_index >= target_index:
-                pnl = (current_option - entry_price) * LOT_SIZE
+        if current_index <= sl_index or current_index >= target_index:
 
-                trade_log.append({
-                    "date": date,
-                    "type": opt_type,
-                    "strike": strike,
-                    "entry": round(entry_price,2),
-                    "exit": round(current_option,2),
-                    "pnl": round(pnl,2)
-                })
+            pnl = (current_option - entry_price) * LOT_SIZE
 
-                capital += pnl
-                daily_pnl += pnl
-                results.append(pnl)
+            trade_log.append({
+                "date": date,
+                "type": opt_type,
+                "strike": strike,
+                "entry": round(entry_price,2),
+                "exit": round(current_option,2),
+                "pnl": round(pnl,2)
+            })
 
-                position = None
-                trades += 1
+            capital += pnl
+            daily_pnl += pnl
+            results.append(pnl)
 
-        elif position == "SELL":
-            if current_index >= sl_index or current_index <= target_index:
-                pnl = (entry_price - current_option) * LOT_SIZE
+            position = None
+            trades += 1
 
-                trade_log.append({
-                    "date": date,
-                    "type": opt_type,
-                    "strike": strike,
-                    "entry": round(entry_price,2),
-                    "exit": round(current_option,2),
-                    "pnl": round(pnl,2)
-                })
-
-                capital += pnl
-                daily_pnl += pnl
-                results.append(pnl)
-
-                position = None
-                trades += 1
-
-# ================= RESULT =================
+# RESULT
 wins = len([x for x in results if x > 0])
 losses = len([x for x in results if x < 0])
 
-print("\n📊 FINAL RESULT\n")
+print("\n📊 BEST MOVING STRIKE RESULT\n")
 print(f"Capital: ₹{round(capital,2)}")
 print(f"PnL: ₹{round(capital-START_CAPITAL,2)}")
 print(f"Trades: {len(results)} | Wins: {wins} | Losses: {losses}")
@@ -244,7 +249,6 @@ print(f"Trades: {len(results)} | Wins: {wins} | Losses: {losses}")
 if results:
     print(f"Win Rate: {round((wins/len(results))*100,2)}%")
 
-# ================= TRADE LOG =================
 print("\n📋 TRADE DETAILS:\n")
 
 for t in trade_log:
