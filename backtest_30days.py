@@ -83,7 +83,9 @@ def get_price(df_opt, t):
 # ================= BACKTEST =================
 position = None
 entry_price = 0
-sl = 0
+entry_index = 0
+sl_index = 0
+target_index = 0
 opt = None
 
 orb_high = None
@@ -152,9 +154,12 @@ for i in range(30, len(df)):
                     continue
 
                 entry_price = get_price(opt, time_)
+                entry_index = price
                 position = "BUY"
 
-                sl = prev['low']  # initial SL
+                sl_index = prev['low']
+                risk = entry_index - sl_index
+                target_index = entry_index + risk
 
         # SELL
         elif pullback_flag == "SELL" and price < ema and prev['close'] > prev['open']:
@@ -166,21 +171,23 @@ for i in range(30, len(df)):
                     continue
 
                 entry_price = get_price(opt, time_)
+                entry_index = price
                 position = "SELL"
 
-                sl = prev['high']  # initial SL
+                sl_index = prev['high']
+                risk = sl_index - entry_index
+                target_index = entry_index - risk
 
-    # EXIT (TRAILING)
+    # EXIT (based on INDEX)
     elif position:
 
-        current = get_price(opt, time_)
+        current_index = price
+        current_option = get_price(opt, time_)
 
-        # TRAIL SL
         if position == "BUY":
-            sl = max(sl, prev['low'])
+            if current_index <= sl_index or current_index >= target_index:
+                pnl = (current_option - entry_price) * LOT_SIZE
 
-            if current <= sl:
-                pnl = (current - entry_price) * LOT_SIZE
                 capital += pnl
                 daily_pnl += pnl
                 results.append(pnl)
@@ -189,10 +196,9 @@ for i in range(30, len(df)):
                 trades += 1
 
         elif position == "SELL":
-            sl = min(sl, prev['high'])
+            if current_index >= sl_index or current_index <= target_index:
+                pnl = (entry_price - current_option) * LOT_SIZE
 
-            if current >= sl:
-                pnl = (entry_price - current) * LOT_SIZE
                 capital += pnl
                 daily_pnl += pnl
                 results.append(pnl)
@@ -204,7 +210,7 @@ for i in range(30, len(df)):
 wins = len([x for x in results if x > 0])
 losses = len([x for x in results if x < 0])
 
-print("\n📊 TRAILING SL STRATEGY\n")
+print("\n📊 INDEX BASED SL (1:1)\n")
 print(f"Capital: ₹{round(capital,2)}")
 print(f"PnL: ₹{round(capital-START_CAPITAL,2)}")
 print(f"Trades: {len(results)} | Wins: {wins} | Losses: {losses}")
