@@ -43,7 +43,6 @@ print("📥 Loading instruments...")
 inst = pd.DataFrame(kite.instruments("NFO"))
 inst['expiry'] = pd.to_datetime(inst['expiry'])
 
-# ================= HELPERS =================
 def get_expiry(date):
     return inst[(inst['name']=="NIFTY") & (inst['expiry']>=pd.to_datetime(date))]['expiry'].min()
 
@@ -70,7 +69,7 @@ def get_price(df_opt, time_):
     idx = df_opt.index.get_indexer([pd.to_datetime(time_)], method='nearest')
     return df_opt.iloc[idx[0]]['close']
 
-# ================= 🔥 CORRECT STRIKE SELECTION =================
+# ================= STRIKE SELECTION =================
 def get_best_token(price, expiry, opt_type, time_):
 
     atm = round(price / 50) * 50
@@ -98,7 +97,6 @@ def get_best_token(price, expiry, opt_type, time_):
 
             entry_price = get_price(opt_df, time_)
 
-            # ✅ STRICT CAPITAL CHECK
             if entry_price * LOT_SIZE <= capital:
                 return token, strike
 
@@ -125,7 +123,7 @@ current_day = None
 results = []
 trade_log = []
 
-for i in range(30, len(df)):
+for i in range(30, len(df) - 1):  # important: -1 for next candle
 
     row = df.iloc[i]
     prev = df.iloc[i-1]
@@ -133,10 +131,12 @@ for i in range(30, len(df)):
     price = row['close']
     ema = row['ema20']
     time_ = row['date']
+    next_time = df.iloc[i+1]['date']
+
     t = time_.time()
     date = time_.date()
 
-    # RESET DAILY
+    # RESET
     if current_day != date:
         current_day = date
         orb_high = None
@@ -203,22 +203,22 @@ for i in range(30, len(df)):
                 risk = sl_index - entry_index
                 target_index = entry_index - risk
 
-    # EXIT (INDEX BASED)
+    # EXIT
     elif position:
 
         current_index = price
-        current_option = get_price(opt, time_)
+        exit_option = get_price(opt, next_time)  # ✅ FIXED
 
         if current_index <= sl_index or current_index >= target_index:
 
-            pnl = (current_option - entry_price) * LOT_SIZE
+            pnl = (exit_option - entry_price) * LOT_SIZE
 
             trade_log.append({
                 "date": date,
                 "type": opt_type,
                 "strike": strike,
                 "entry": round(entry_price,2),
-                "exit": round(current_option,2),
+                "exit": round(exit_option,2),
                 "pnl": round(pnl,2)
             })
 
@@ -233,7 +233,7 @@ for i in range(30, len(df)):
 wins = len([x for x in results if x > 0])
 losses = len([x for x in results if x < 0])
 
-print("\n📊 FINAL CLEAN RESULT\n")
+print("\n📊 FINAL REALISTIC RESULT\n")
 print(f"Capital: ₹{round(capital,2)}")
 print(f"PnL: ₹{round(capital - START_CAPITAL,2)}")
 print(f"Trades: {len(results)} | Wins: {wins} | Losses: {losses}")
