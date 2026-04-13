@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 # ==============================
-# ENV VARIABLES
+# 🔑 ENV VARIABLES
 # ==============================
 API_KEY = os.environ.get("API_KEY")
 API_SECRET = os.environ.get("API_SECRET")
@@ -17,12 +17,12 @@ kite.set_access_token(session["access_token"])
 print("✅ Access Token Ready")
 
 # ==============================
-# FETCH NIFTY SPOT DATA
+# 📊 FETCH NIFTY SPOT DATA
 # ==============================
 nifty_token = 256265
 
 to_date = datetime.now()
-from_date = to_date - timedelta(days=15)
+from_date = to_date - timedelta(days=10)
 
 spot_data = kite.historical_data(
     nifty_token,
@@ -33,8 +33,14 @@ spot_data = kite.historical_data(
 
 spot_df = pd.DataFrame(spot_data)
 
+print("📊 Total candles:", len(spot_df))
+
+if spot_df.empty:
+    print("❌ No data fetched")
+    exit()
+
 # ==============================
-# LOAD OPTION INSTRUMENTS
+# 📦 LOAD OPTION INSTRUMENTS
 # ==============================
 inst = pd.DataFrame(kite.instruments("NFO"))
 
@@ -46,8 +52,10 @@ nifty_opt = inst[
 nearest_expiry = nifty_opt['expiry'].min()
 nifty_opt = nifty_opt[nifty_opt['expiry'] == nearest_expiry]
 
+print("✅ Loaded option instruments")
+
 # ==============================
-# CAPITAL
+# 💰 CAPITAL
 # ==============================
 capital = 20000
 qty = 65
@@ -57,9 +65,16 @@ entry_price = 0
 trades = []
 
 # ==============================
-# LOOP (STRICT LONG CALL / PUT)
+# ⚡ OPTION DATA CACHE (FIX)
+# ==============================
+option_cache = {}
+
+# ==============================
+# 🚀 MAIN LOOP
 # ==============================
 for i in range(1, len(spot_df)):
+
+    print("Processing candle:", i)
 
     row = spot_df.iloc[i]
     prev = spot_df.iloc[i-1]
@@ -67,7 +82,7 @@ for i in range(1, len(spot_df)):
     price = row['close']
     timestamp = row['date']
 
-    # ATM STRIKE
+    # ===== ATM STRIKE =====
     atm = round(price / 50) * 50
 
     call_row = nifty_opt[
@@ -86,14 +101,28 @@ for i in range(1, len(spot_df)):
     call_token = int(call_row.iloc[0]['instrument_token'])
     put_token = int(put_row.iloc[0]['instrument_token'])
 
-    # FETCH OPTION DATA
-    call_data = kite.historical_data(call_token, from_date, to_date, "5minute")
-    put_data = kite.historical_data(put_token, from_date, to_date, "5minute")
+    # ==============================
+    # FETCH OPTION DATA ONLY ONCE
+    # ==============================
+    if call_token not in option_cache:
+        print(f"📥 Fetching CALL data for {call_token}")
+        call_data = kite.historical_data(call_token, from_date, to_date, "5minute")
+        option_cache[call_token] = pd.DataFrame(call_data)
 
-    call_df = pd.DataFrame(call_data)
-    put_df = pd.DataFrame(put_data)
+    if put_token not in option_cache:
+        print(f"📥 Fetching PUT data for {put_token}")
+        put_data = kite.historical_data(put_token, from_date, to_date, "5minute")
+        option_cache[put_token] = pd.DataFrame(put_data)
 
-    # NEAREST TIME MATCH
+    call_df = option_cache[call_token]
+    put_df = option_cache[put_token]
+
+    if call_df.empty or put_df.empty:
+        continue
+
+    # ==============================
+    # MATCH NEAREST TIME (FIX)
+    # ==============================
     call_df['diff'] = abs(call_df['date'] - timestamp)
     put_df['diff'] = abs(put_df['date'] - timestamp)
 
@@ -101,23 +130,24 @@ for i in range(1, len(spot_df)):
     put_price = put_df.sort_values('diff').iloc[0]['close']
 
     # ==============================
-    # LONG CALL (Bullish)
+    # ENTRY (STRICT VARSITY STYLE)
     # ==============================
-    if position is None and row['close'] > prev['close']:
-        position = "CALL"
-        entry_price = call_price
-        trades.append(("BUY CALL", timestamp, entry_price))
+    if position is None:
+
+        # LONG CALL
+        if row['close'] > prev['close']:
+            position = "CALL"
+            entry_price = call_price
+            trades.append(("BUY CALL", timestamp, entry_price))
+
+        # LONG PUT
+        elif row['close'] < prev['close']:
+            position = "PUT"
+            entry_price = put_price
+            trades.append(("BUY PUT", timestamp, entry_price))
 
     # ==============================
-    # LONG PUT (Bearish)
-    # ==============================
-    elif position is None and row['close'] < prev['close']:
-        position = "PUT"
-        entry_price = put_price
-        trades.append(("BUY PUT", timestamp, entry_price))
-
-    # ==============================
-    # EXIT (SIMPLE)
+    # EXIT
     # ==============================
     elif position == "CALL":
         pnl = (call_price - entry_price) * qty
@@ -136,9 +166,9 @@ for i in range(1, len(spot_df)):
             position = None
 
 # ==============================
-# RESULT
+# 📊 RESULT
 # ==============================
-print("\n===== RESULT =====")
+print("\n===== FINAL RESULT =====")
 print("Final Capital:", capital)
 
 exits = [t for t in trades if "EXIT" in t[0]]
@@ -151,3 +181,7 @@ print("Losses:", len(losses))
 
 if exits:
     print("Win Rate:", round(len(wins)/len(exits)*100, 2), "%")
+
+print("\nSample Trades:")
+for t in trades[:10]:
+    print(t)
