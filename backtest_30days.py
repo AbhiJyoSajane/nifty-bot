@@ -1,248 +1,213 @@
+import os
 from kiteconnect import KiteConnect
 import pandas as pd
-import datetime
-import os
+from datetime import datetime, timedelta
 
-# ================= CONFIG =================
-api_key = os.environ.get("API_KEY")
-api_secret = os.environ.get("API_SECRET")
-request_token = os.environ.get("REQUEST_TOKEN")
+# ==============================
+# 🔑 ENV VARIABLES
+# ==============================
+API_KEY = os.environ.get("API_KEY")
+API_SECRET = os.environ.get("API_SECRET")
+REQUEST_TOKEN = os.environ.get("REQUEST_TOKEN")
 
-kite = KiteConnect(api_key=api_key)
-data = kite.generate_session(request_token, api_secret=api_secret)
-kite.set_access_token(data["access_token"])
+kite = KiteConnect(api_key=API_KEY)
+session = kite.generate_session(REQUEST_TOKEN, api_secret=API_SECRET)
+kite.set_access_token(session["access_token"])
 
-print("✅ Connected")
+print("✅ Access Token Ready")
 
-# ================= SETTINGS =================
-NIFTY = 256265
-LOT_SIZE = 65
-START_CAPITAL = 20000
+# ==============================
+# 📊 FETCH NIFTY SPOT DATA
+# ==============================
+nifty_token = 256265
 
-capital = START_CAPITAL
-MAX_TRADES = 2
-MAX_DAILY_LOSS = -2000
+to_date = datetime.now()
+from_date = to_date - timedelta(days=7)
 
-# ================= DATE =================
-to_date = datetime.datetime.now()
-from_date = to_date - datetime.timedelta(days=30)
+spot_data = kite.historical_data(
+    nifty_token,
+    from_date,
+    to_date,
+    "5minute"
+)
 
-# ================= FETCH INDEX =================
-spot = kite.historical_data(NIFTY, from_date, to_date, "5minute")
-df = pd.DataFrame(spot)
+spot_df = pd.DataFrame(spot_data)
 
-if df.empty:
-    print("❌ No data")
-    exit()
+# ==============================
+# 📈 INDICATORS (VARSITY)
+# ==============================
+spot_df['EMA9'] = spot_df['close'].ewm(span=9).mean()
 
-df.columns = [c.lower() for c in df.columns]
-df['ema20'] = df['close'].rolling(20).mean()
+spot_df['cum_vol'] = spot_df['volume'].cumsum()
+spot_df['cum_vol_price'] = (spot_df['close'] * spot_df['volume']).cumsum()
+spot_df['VWAP'] = spot_df['cum_vol_price'] / spot_df['cum_vol']
 
-# ================= INSTRUMENTS =================
-print("📥 Loading instruments...")
+# ==============================
+# 📦 LOAD INSTRUMENTS
+# ==============================
 inst = pd.DataFrame(kite.instruments("NFO"))
-inst['expiry'] = pd.to_datetime(inst['expiry'])
 
-def get_expiry(date):
-    return inst[(inst['name']=="NIFTY") & (inst['expiry']>=pd.to_datetime(date))]['expiry'].min()
+nifty_opt = inst[
+    (inst['name'] == 'NIFTY') &
+    (inst['segment'] == 'NFO-OPT')
+]
 
-# ================= OPTION CACHE =================
-cache = {}
+nearest_expiry = nifty_opt['expiry'].min()
+nifty_opt = nifty_opt[nifty_opt['expiry'] == nearest_expiry]
 
-def load_option(token):
-    if token not in cache:
-        data = kite.historical_data(token, from_date, to_date, "5minute")
-        df_opt = pd.DataFrame(data)
+# ==============================
+# 💰 CAPITAL SETUP
+# ==============================
+capital = 20000
+risk_per_trade = 1200
+max_daily_loss = 2400
 
-        if df_opt.empty:
-            return None
-
-        df_opt.columns = [c.lower() for c in df_opt.columns]
-        df_opt['date'] = pd.to_datetime(df_opt['date'])
-        df_opt.set_index('date', inplace=True)
-
-        cache[token] = df_opt
-
-    return cache[token]
-
-def get_price(df_opt, time_):
-    idx = df_opt.index.get_indexer([pd.to_datetime(time_)], method='nearest')
-    return df_opt.iloc[idx[0]]['close']
-
-# ================= STRIKE SELECTION =================
-def get_best_token(price, expiry, opt_type, time_):
-
-    atm = round(price / 50) * 50
-
-    for diff in range(0, 500, 50):
-        for direction in [1, -1]:
-
-            strike = atm + (diff * direction)
-
-            row = inst[
-                (inst['name']=="NIFTY") &
-                (inst['strike']==strike) &
-                (inst['expiry']==expiry) &
-                (inst['instrument_type']==opt_type)
-            ]
-
-            if row.empty:
-                continue
-
-            token = int(row.iloc[0]['instrument_token'])
-
-            opt_df = load_option(token)
-            if opt_df is None:
-                continue
-
-            entry_price = get_price(opt_df, time_)
-
-            if entry_price * LOT_SIZE <= capital:
-                return token, strike
-
-    return None, None
-
-# ================= BACKTEST =================
 position = None
 entry_price = 0
-entry_index = 0
-sl_index = 0
-target_index = 0
-opt = None
-strike = None
-opt_type = None
+qty = 65
+daily_loss = 0
 
-orb_high = None
-orb_low = None
-pullback_flag = False
+trades = []
 
-daily_pnl = 0
-trades = 0
-current_day = None
+# Cache for option data (important optimization)
+option_cache = {}
 
-results = []
-trade_log = []
+# ==============================
+# 🚀 MAIN LOOP
+# ==============================
+for i in range(20, len(spot_df)):
 
-for i in range(30, len(df) - 1):  # important: -1 for next candle
+    if daily_loss >= max_daily_loss:
+        print("🚫 Daily SL hit")
+        break
 
-    row = df.iloc[i]
-    prev = df.iloc[i-1]
+    row = spot_df.iloc[i]
+    prev = spot_df.iloc[i-1]
 
     price = row['close']
-    ema = row['ema20']
-    time_ = row['date']
-    next_time = df.iloc[i+1]['date']
+    timestamp = row['date']
 
-    t = time_.time()
-    date = time_.date()
+    # ===== ATM STRIKE =====
+    atm = round(price / 50) * 50
 
-    # RESET
-    if current_day != date:
-        current_day = date
-        orb_high = None
-        orb_low = None
-        position = None
-        daily_pnl = 0
-        trades = 0
-        pullback_flag = False
+    call_row = nifty_opt[
+        (nifty_opt['strike'] == atm) &
+        (nifty_opt['instrument_type'] == 'CE')
+    ]
 
-    # ORB BUILD
-    if datetime.time(9,15) <= t <= datetime.time(9,45):
-        orb_high = max(orb_high or row['high'], row['high'])
-        orb_low = min(orb_low or row['low'], row['low'])
+    put_row = nifty_opt[
+        (nifty_opt['strike'] == atm) &
+        (nifty_opt['instrument_type'] == 'PE')
+    ]
 
-    if orb_high is None:
+    if call_row.empty or put_row.empty:
         continue
 
-    # ENTRY WINDOW
-    if not (datetime.time(10,0) <= t <= datetime.time(11,30)):
+    call_token = int(call_row.iloc[0]['instrument_token'])
+    put_token = int(put_row.iloc[0]['instrument_token'])
+
+    # ===== FETCH OPTION DATA (CACHE) =====
+    if call_token not in option_cache:
+        call_data = kite.historical_data(
+            call_token, from_date, to_date, "5minute"
+        )
+        option_cache[call_token] = pd.DataFrame(call_data)
+
+    if put_token not in option_cache:
+        put_data = kite.historical_data(
+            put_token, from_date, to_date, "5minute"
+        )
+        option_cache[put_token] = pd.DataFrame(put_data)
+
+    call_df = option_cache[call_token]
+    put_df = option_cache[put_token]
+
+    # ===== SYNC TIMESTAMP =====
+    call_row_data = call_df[call_df['date'] == timestamp]
+    put_row_data = put_df[put_df['date'] == timestamp]
+
+    if call_row_data.empty or put_row_data.empty:
         continue
 
-    # BREAKOUT
-    if price > orb_high:
-        pullback_flag = "BUY"
-    elif price < orb_low:
-        pullback_flag = "SELL"
+    call_price = call_row_data.iloc[0]['close']
+    put_price = put_row_data.iloc[0]['close']
 
+    # ===== VOLATILITY FILTER =====
+    candle_range = row['high'] - row['low']
+    avg_range = spot_df['high'].rolling(10).mean().iloc[i]
+    strong_candle = candle_range > avg_range
+
+    # ==============================
     # ENTRY
-    if position is None and trades < MAX_TRADES and daily_pnl > MAX_DAILY_LOSS:
+    # ==============================
+    if position is None:
 
-        expiry = get_expiry(date)
-        if expiry is None:
-            continue
+        # CALL BUY
+        if (
+            row['close'] > row['VWAP'] and
+            row['EMA9'] > row['VWAP'] and
+            row['high'] > prev['high'] and
+            strong_candle
+        ):
+            position = "CALL"
+            entry_price = call_price
+            trades.append(("BUY CALL", timestamp, entry_price))
 
-        # CE BUY
-        if pullback_flag == "BUY" and price > ema and prev['close'] < prev['open']:
+        # PUT BUY
+        elif (
+            row['close'] < row['VWAP'] and
+            row['EMA9'] < row['VWAP'] and
+            row['low'] < prev['low'] and
+            strong_candle
+        ):
+            position = "PUT"
+            entry_price = put_price
+            trades.append(("BUY PUT", timestamp, entry_price))
 
-            token, strike = get_best_token(price, expiry, "CE", time_)
-
-            if token:
-                opt = load_option(token)
-                entry_price = get_price(opt, time_)
-                entry_index = price
-                position = "BUY"
-                opt_type = "CE"
-
-                sl_index = prev['low']
-                risk = entry_index - sl_index
-                target_index = entry_index + risk
-
-        # PE BUY
-        elif pullback_flag == "SELL" and price < ema and prev['close'] > prev['open']:
-
-            token, strike = get_best_token(price, expiry, "PE", time_)
-
-            if token:
-                opt = load_option(token)
-                entry_price = get_price(opt, time_)
-                entry_index = price
-                position = "SELL"
-                opt_type = "PE"
-
-                sl_index = prev['high']
-                risk = sl_index - entry_index
-                target_index = entry_index - risk
-
+    # ==============================
     # EXIT
-    elif position:
+    # ==============================
+    elif position == "CALL":
+        pnl = (call_price - entry_price) * qty
 
-        current_index = price
-        exit_option = get_price(opt, next_time)  # ✅ FIXED
-
-        if current_index <= sl_index or current_index >= target_index:
-
-            pnl = (exit_option - entry_price) * LOT_SIZE
-
-            trade_log.append({
-                "date": date,
-                "type": opt_type,
-                "strike": strike,
-                "entry": round(entry_price,2),
-                "exit": round(exit_option,2),
-                "pnl": round(pnl,2)
-            })
-
+        if pnl <= -risk_per_trade or pnl >= 2 * risk_per_trade:
             capital += pnl
-            daily_pnl += pnl
-            results.append(pnl)
+            trades.append(("EXIT CALL", timestamp, call_price, pnl))
+
+            if pnl < 0:
+                daily_loss += abs(pnl)
 
             position = None
-            trades += 1
 
-# ================= RESULT =================
-wins = len([x for x in results if x > 0])
-losses = len([x for x in results if x < 0])
+    elif position == "PUT":
+        pnl = (entry_price - put_price) * qty
 
-print("\n📊 FINAL REALISTIC RESULT\n")
-print(f"Capital: ₹{round(capital,2)}")
-print(f"PnL: ₹{round(capital - START_CAPITAL,2)}")
-print(f"Trades: {len(results)} | Wins: {wins} | Losses: {losses}")
+        if pnl <= -risk_per_trade or pnl >= 2 * risk_per_trade:
+            capital += pnl
+            trades.append(("EXIT PUT", timestamp, put_price, pnl))
 
-if results:
-    print(f"Win Rate: {round((wins/len(results))*100,2)}%")
+            if pnl < 0:
+                daily_loss += abs(pnl)
 
-print("\n📋 TRADE DETAILS:\n")
+            position = None
 
-for t in trade_log:
-    print(f"{t['date']} | {t['type']} {t['strike']} | "
-          f"{t['entry']} → {t['exit']} | PnL: ₹{t['pnl']}")
+# ==============================
+# 📊 RESULTS
+# ==============================
+print("\n===== FINAL RESULT =====")
+print("Final Capital:", capital)
+
+exits = [t for t in trades if "EXIT" in t[0]]
+wins = [t for t in exits if t[3] > 0]
+losses = [t for t in exits if t[3] <= 0]
+
+print("Trades:", len(exits))
+print("Wins:", len(wins))
+print("Losses:", len(losses))
+
+if exits:
+    print("Win Rate:", round(len(wins)/len(exits)*100, 2), "%")
+
+print("\nSample Trades:")
+for t in trades[:10]:
+    print(t)
