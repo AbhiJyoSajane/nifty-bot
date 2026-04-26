@@ -1,31 +1,43 @@
 import os
-from kiteconnect import KiteConnect
 import pandas as pd
 from datetime import datetime, timedelta
+from kiteconnect import KiteConnect
 
 # ==============================
-# 🔑 ENV VARIABLES
+# ENV VARIABLES (Railway)
 # ==============================
 API_KEY = os.environ.get("API_KEY")
 API_SECRET = os.environ.get("API_SECRET")
 REQUEST_TOKEN = os.environ.get("REQUEST_TOKEN")
 
+# ==============================
+# SESSION GENERATION
+# ==============================
 kite = KiteConnect(api_key=API_KEY)
+
 session = kite.generate_session(REQUEST_TOKEN, api_secret=API_SECRET)
 kite.set_access_token(session["access_token"])
 
-print("✅ Access Token Ready")
+print("✅ Access Token Generated")
 
 # ==============================
-# 📊 FETCH NIFTY SPOT DATA
+# CONFIG
 # ==============================
-nifty_token = 256265
+NIFTY_TOKEN = 256265
+LOT_SIZE = 65
 
+capital = 20000
+risk_per_trade = 1200
+target_per_trade = 2400
+
+# ==============================
+# FETCH DATA
+# ==============================
 to_date = datetime.now()
-from_date = to_date - timedelta(days=10)
+from_date = to_date - timedelta(days=7)
 
 spot_data = kite.historical_data(
-    nifty_token,
+    NIFTY_TOKEN,
     from_date,
     to_date,
     "5minute"
@@ -35,12 +47,8 @@ spot_df = pd.DataFrame(spot_data)
 
 print("📊 Total candles:", len(spot_df))
 
-if spot_df.empty:
-    print("❌ No data fetched")
-    exit()
-
 # ==============================
-# 📦 LOAD OPTION INSTRUMENTS
+# LOAD OPTION INSTRUMENTS
 # ==============================
 inst = pd.DataFrame(kite.instruments("NFO"))
 
@@ -52,29 +60,24 @@ nifty_opt = inst[
 nearest_expiry = nifty_opt['expiry'].min()
 nifty_opt = nifty_opt[nifty_opt['expiry'] == nearest_expiry]
 
-print("✅ Loaded option instruments")
-
 # ==============================
-# 💰 CAPITAL
-# ==============================
-capital = 20000
-qty = 65
-
-position = None
-entry_price = 0
-trades = []
-
-# ==============================
-# ⚡ OPTION DATA CACHE (FIX)
+# CACHE
 # ==============================
 option_cache = {}
 
 # ==============================
-# 🚀 MAIN LOOP
+# BACKTEST VARIABLES
 # ==============================
-for i in range(1, len(spot_df)):
+position = None
+entry_price = 0
+option_type = None
 
-    print("Processing candle:", i)
+trades = []
+
+# ==============================
+# MAIN LOOP
+# ==============================
+for i in range(2, len(spot_df)):
 
     row = spot_df.iloc[i]
     prev = spot_df.iloc[i-1]
@@ -82,7 +85,7 @@ for i in range(1, len(spot_df)):
     price = row['close']
     timestamp = row['date']
 
-    # ===== ATM STRIKE =====
+    # ATM STRIKE
     atm = round(price / 50) * 50
 
     call_row = nifty_opt[
@@ -101,16 +104,12 @@ for i in range(1, len(spot_df)):
     call_token = int(call_row.iloc[0]['instrument_token'])
     put_token = int(put_row.iloc[0]['instrument_token'])
 
-    # ==============================
-    # FETCH OPTION DATA ONLY ONCE
-    # ==============================
+    # FETCH OPTION DATA (CACHE)
     if call_token not in option_cache:
-        print(f"📥 Fetching CALL data for {call_token}")
         call_data = kite.historical_data(call_token, from_date, to_date, "5minute")
         option_cache[call_token] = pd.DataFrame(call_data)
 
     if put_token not in option_cache:
-        print(f"📥 Fetching PUT data for {put_token}")
         put_data = kite.historical_data(put_token, from_date, to_date, "5minute")
         option_cache[put_token] = pd.DataFrame(put_data)
 
@@ -120,9 +119,7 @@ for i in range(1, len(spot_df)):
     if call_df.empty or put_df.empty:
         continue
 
-    # ==============================
-    # MATCH NEAREST TIME (FIX)
-    # ==============================
+    # MATCH TIME (nearest)
     call_df['diff'] = abs(call_df['date'] - timestamp)
     put_df['diff'] = abs(put_df['date'] - timestamp)
 
@@ -130,52 +127,56 @@ for i in range(1, len(spot_df)):
     put_price = put_df.sort_values('diff').iloc[0]['close']
 
     # ==============================
-    # ENTRY (STRICT VARSITY STYLE)
+    # ENTRY
     # ==============================
     if position is None:
 
-        # LONG CALL
-        if row['close'] > prev['close']:
+        # CALL BUY
+        if row['close'] > prev['high']:
             position = "CALL"
             entry_price = call_price
+            option_type = "CE"
             trades.append(("BUY CALL", timestamp, entry_price))
 
-        # LONG PUT
-        elif row['close'] < prev['close']:
+        # PUT BUY
+        elif row['close'] < prev['low']:
             position = "PUT"
             entry_price = put_price
+            option_type = "PE"
             trades.append(("BUY PUT", timestamp, entry_price))
 
     # ==============================
     # EXIT
     # ==============================
     elif position == "CALL":
-        pnl = (call_price - entry_price) * qty
 
-        if pnl >= 2000 or pnl <= -1000:
+        pnl = (call_price - entry_price) * LOT_SIZE
+
+        if pnl <= -risk_per_trade or pnl >= target_per_trade:
             capital += pnl
             trades.append(("EXIT CALL", timestamp, call_price, pnl))
             position = None
 
     elif position == "PUT":
-        pnl = (entry_price - put_price) * qty
 
-        if pnl >= 2000 or pnl <= -1000:
+        pnl = (entry_price - put_price) * LOT_SIZE
+
+        if pnl <= -risk_per_trade or pnl >= target_per_trade:
             capital += pnl
             trades.append(("EXIT PUT", timestamp, put_price, pnl))
             position = None
 
 # ==============================
-# 📊 RESULT
+# RESULT
 # ==============================
-print("\n===== FINAL RESULT =====")
+print("\n===== BACKTEST RESULT =====")
 print("Final Capital:", capital)
 
 exits = [t for t in trades if "EXIT" in t[0]]
 wins = [t for t in exits if t[3] > 0]
 losses = [t for t in exits if t[3] <= 0]
 
-print("Trades:", len(exits))
+print("Total Trades:", len(exits))
 print("Wins:", len(wins))
 print("Losses:", len(losses))
 
